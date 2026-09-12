@@ -136,6 +136,11 @@ bound to `0.0.0.0` on some free port (receives the forwarded packet) and
 an `hrd` output pointed at `127.0.0.1:2333` (guaranteed-loopback, same PC
 as HRD) — but this shouldn't normally be necessary.
 
+**Field-verified in 1.4.2** across a real two-PC ZeroTier setup (radio +
+router on one PC, HRD Logbook on another): direct forwarding to the HRD
+PC's ZeroTier IP on port 2333 works with no relay, and real logged QSOs
+now appear in HRD automatically alongside Wavelog and CQ Radio.
+
 ## Configuration
 
 ### Via the GUI

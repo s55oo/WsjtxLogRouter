@@ -37,7 +37,7 @@ from datetime import datetime, date, timedelta
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 
-__version__ = "1.4.2"
+__version__ = "1.4.3"
 
 if getattr(sys, "frozen", False):
     _BASE_DIR = os.path.dirname(os.path.abspath(sys.executable))
