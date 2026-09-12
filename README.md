@@ -25,7 +25,7 @@ docs/               screenshots used by this README
 ## How it works
 
                    ┌──────────────────────┐
-    WSJT-X  UDP ──►│ 0.0.0.0:2237         │
+    WSJT-X  UDP ──►│ 127.0.0.1:2237       │
                    │   (binary WSJT-X     │
                    │    UDP protocol)     │
     N1MM+/DXLog UDP ►│ 0.0.0.0:12060       │  Router (this app)
@@ -43,10 +43,14 @@ docs/               screenshots used by this README
 
 - **WSJT-X input (port 2237):** decodes the WSJT-X binary UDP protocol
   (`magic 0xADBCCBDA`, schema-2/schema-3, message types). Only QSO events
-  (`QSOLogged`, `LoggedADIF`) are converted to ADIF and dispatched.
+  (`QSOLogged`, `LoggedADIF`) are converted to ADIF and dispatched. Bound to
+  `127.0.0.1` (WSJT-X only ever talks to the router over loopback on the
+  same PC).
 - **N1MM+ / DXLog input (port 12060):** listens to N1MM Logger+ or DXLog UDP XML broadcasts
   (`<contactinfo>`, `<contactreplace>`, ...) and converts them to ADIF. DXLog
-  must have *Options → Broadcast → Use N1MM QSO format* ticked.
+  must have *Options → Broadcast → Use N1MM QSO format* ticked. Bound to
+  `0.0.0.0` (all interfaces) so it also receives LAN subnet broadcasts, not
+  just loopback unicast.
 - **UDP forward outputs:** every received datagram is mirrored to the
   configured `host:port` (that is what QLog uses to get the raw WSJT-X
   packets). Replies from forwarded apps are routed back to the sender.
@@ -96,12 +100,24 @@ Verified against DXLog.net v2.6.34.
 
 ### Via the GUI
 
-- **Inputs** tab: add/remove UDP listen ports (`WSJTX` default 2237,
-  `N1MM` default 12060 — the N1MM input also receives DXLog, which speaks the
-  same XML broadcast).
-- **Outputs** tab: Add/Edit/Remove. The table shows `Type`, `Target` and
-  `Last call`. `Last call` shows the callsign of the most recent QSO that
-  was dispatched to that destination.
+The window opens in a **minimal view**: the current Running/Stopped state,
+the last QSO logged (callsign + time), and a Destinations list showing
+every configured output with a status dot and its last call. Click
+**Details ▸** to switch to the full view with editable Inputs/Outputs
+tables and the activity log; click **Minimal ◂** to switch back. Both
+views share the same underlying data, so edits made in Details show up in
+the minimal Destinations list immediately.
+
+- **Status dot** per destination: green ● once an HTTP output's last POST
+  actually succeeded, red ● once it failed (checked against the real HTTP
+  response, not just "a send was attempted"), gray ○ for UDP/ADIF outputs
+  (fire-and-forget — there is no delivery confirmation to check).
+- **Inputs** tab (Details view): add/remove UDP listen ports (`WSJTX`
+  default 2237, `N1MM` default 12060 — the N1MM input also receives DXLog,
+  which speaks the same XML broadcast).
+- **Outputs** tab (Details view): Add/Edit/Remove. The table shows `Type`,
+  `Target`, the status dot and `Last call` — the callsign of the most
+  recent QSO dispatched to that destination.
 - **Save config** writes `WsjtxLogRouter.json`.
 - Start button turns green while running, Stop button turns red while stopped.
 
@@ -177,7 +193,13 @@ python WsjtxLogRouter.py
 - **Duplicate suppression:** WSJT-X sends both `QSOLogged` and `LoggedADIF`
   for a single logged QSO. The router deduplicates on
   call + date + mode + frequency (120 s window) so a destination receives
-  each QSO exactly once.
+  each QSO exactly once. Frequency is compared numerically
+  (`round(float(freq), 6)`), not as a raw string — WSJT-X's own ADIF keeps a
+  fixed 6-decimal frequency (e.g. `14.075080`) while the router's own
+  QSOLogged-derived ADIF strips trailing zeros (`14.07508`) for the same
+  QSO; comparing those as plain strings used to let the pair slip past
+  dedup and double-post to every HTTP output whenever a frequency happened
+  to end in a zero.
 - **ADIF output quality:** QSOs are enriched with `BAND` (derived from
   frequency) and `TX_PWR` (from WSJT-X `tx_pwr`) before dispatch.
 - **Logging:** every event/error is written to `WsjtxLogRouter.log`
@@ -190,6 +212,11 @@ python WsjtxLogRouter.py
   Check `WsjtxLogRouter.log` for `QSO logged` / `-> logged` lines.
 - **Nothing is received:** confirm WSJT-X Reporting is enabled with the UDP
   server set to `127.0.0.1:2237`, and that the router shows green Start.
+- **Every QSO posts twice to Wavelog/CQ Radio/HTTP:** fixed in 1.2.0 (see
+  Duplicate suppression above) — update if you're on an older build.
+- **A destination's status dot stays red:** an HTTP output's last POST
+  failed; check `WsjtxLogRouter.log` for the `HTTP ERROR '<name>': ...`
+  line for the actual response/reason.
 - **All GUI errors** (e.g. a bad config) are captured to
   `WsjtxLogRouter.log` — the app runs headless under `pythonw.exe` and has
   no console to print to.
