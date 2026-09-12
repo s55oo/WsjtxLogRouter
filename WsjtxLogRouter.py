@@ -33,9 +33,16 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, date, timedelta
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
-CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "WsjtxLogRouter.json")
 
-LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "WsjtxLogRouter.log")
+__version__ = "1.0.0"
+
+if getattr(sys, "frozen", False):
+    _BASE_DIR = os.path.dirname(os.path.abspath(sys.executable))
+else:
+    _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_FILE = os.path.join(_BASE_DIR, "WsjtxLogRouter.json")
+
+LOG_FILE = os.path.join(_BASE_DIR, "WsjtxLogRouter.log")
 MAGIC = 0xADBCCBDA
 
 HTTP_TIMEOUT = 15
@@ -435,21 +442,21 @@ class Router:
             key = "http:" + o["url"]
             self._last_call[key] = call
             try:
-                self.qsofn(key, call)
+                self.qsofn((key, call))
             except Exception:
                 pass
         for host, port in self.udp_outputs:
             key = "udp:%s:%s" % (host, port)
             self._last_call[key] = call
             try:
-                self.qsofn(key, call)
+                self.qsofn((key, call))
             except Exception:
                 pass
         if self.adif_path:
             key = "adif:" + self.adif_path
             self._last_call[key] = call
             try:
-                self.qsofn(key, call)
+                self.qsofn((key, call))
             except Exception:
                 pass
 
@@ -652,7 +659,7 @@ class Router:
 class App:
     def __init__(self, root):
         self.root = root
-        self.root.title("WSJT-X Multi-Logger Router")
+        self.root.title(f"WSJT-X Multi-Logger Router v{__version__}")
         self.root.geometry("760x560")
         self.log_q = queue.Queue()
         self.qso_q = queue.Queue()
@@ -729,22 +736,26 @@ class App:
         self.log_q.put(str(msg))
 
     def poll_log(self):
-        try:
-            while True:
+        while True:
+            try:
                 msg = self.log_q.get_nowait()
-                self.log_text.configure(state="normal")
-                self.log_text.insert("end", f"[{datetime.now().strftime('%H:%M:%S')}] {msg}\n")
-                self.log_text.see("end")
-                self.log_text.configure(state="disabled")
-        except queue.Empty:
-            pass
-        try:
-            while True:
-                key, call = self.qso_q.get_nowait()
+            except queue.Empty:
+                break
+            self.log_text.configure(state="normal")
+            self.log_text.insert("end", f"[{datetime.now().strftime('%H:%M:%S')}] {msg}\n")
+            self.log_text.see("end")
+            self.log_text.configure(state="disabled")
+        while True:
+            try:
+                item = self.qso_q.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                key, call = item
                 self._last_calls[key] = call
                 self._apply_last(key, call)
-        except queue.Empty:
-            pass
+            except Exception:
+                pass
         self.root.after(150, self.poll_log)
 
     def _apply_last(self, key, call):

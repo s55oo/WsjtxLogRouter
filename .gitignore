@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 *.log
 WsjtxLogRouter.json
+build/
+dist/
+WsjtxLogRouter.exe

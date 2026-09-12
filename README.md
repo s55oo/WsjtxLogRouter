@@ -15,8 +15,11 @@ packages.
 
 ```
 WsjtxLogRouter.py   main program (GUI)
+WsjtxLogRouter.exe  standalone executable (bundles Python/Tk; build with the .spec)
 WsjtxLogRouter.json configuration (auto-loaded on start)
 WsjtxLogRouter.log  activity log (written by the router engine)
+WsjtxLogRouter.spec PyInstaller build file (+ manifest.xml)
+docs/               screenshots used by this README
 ```
 
 ## How it works
@@ -138,15 +141,25 @@ Example:
 ## Running it
 
 ```bat
+WsjtxLogRouter.exe          # standalone executable (no Python needed)
+:: or from source:
 python WsjtxLogRouter.py
 ```
 
 - **Auto-start on launch:** the router starts listening ~100 ms after the
   window opens (no need to click Start).
 - **Autostart with Windows:** a shortcut named `WsjtxLogRouter.lnk` in the
-  Startup folder (`shell:startup`) launches the app at login via
-  `pythonw.exe`, so no console window appears. Remove the shortcut to
-  disable autostart.
+  Startup folder (`shell:startup`) launches the EXE at login. Remove the
+  shortcut to disable autostart. The EXE and `WsjtxLogRouter.json` must stay
+  in the same folder (config is read/written next to the program).
+- **Building the EXE** (PyInstaller is already installed):
+
+  ```bat
+  python -m PyInstaller --clean --noconfirm WsjtxLogRouter.spec
+  copy /Y dist\WsjtxLogRouter.exe WsjtxLogRouter.exe
+  ```
+
+  The spec produces a single windowed EXE with the manifest embedded;
 
 ## Notes / behaviour
 
