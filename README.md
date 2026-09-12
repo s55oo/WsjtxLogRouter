@@ -265,6 +265,14 @@ python WsjtxLogRouter.py
 - **A destination's status dot stays red:** an HTTP output's last POST
   failed; check `WsjtxLogRouter.log` for the `HTTP ERROR '<name>': ...`
   line for the actual response/reason.
+- **An output you hand-edited into `WsjtxLogRouter.json` disappears again:**
+  fixed in 1.4.1. Before 1.4.1, closing the app always overwrote the config
+  file with whatever was in memory when it started — so a hand edit made
+  while the app was (or had been) running got silently discarded the next
+  time it closed. 1.4.1 only auto-saves on close if the file is still
+  exactly as it was at launch; otherwise it skips the save (logging why)
+  and leaves your edit alone. Only edit the JSON file while the app is
+  fully closed, or make the change through the GUI instead.
 - **All GUI errors** (e.g. a bad config) are captured to
   `WsjtxLogRouter.log` — the app runs headless under `pythonw.exe` and has
   no console to print to.

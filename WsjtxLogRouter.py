@@ -37,7 +37,7 @@ from datetime import datetime, date, timedelta
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 
-__version__ = "1.4.0"
+__version__ = "1.4.1"
 
 if getattr(sys, "frozen", False):
     _BASE_DIR = os.path.dirname(os.path.abspath(sys.executable))
@@ -1395,10 +1395,33 @@ class App:
             self.status_var.set("Stopped")
 
     def on_close(self):
+        # Only auto-save GUI edits if the config file is still exactly as it
+        # was when we loaded it. If something else changed it on disk while
+        # we were running (a hand edit, another instance, a sync conflict),
+        # blindly overwriting it here would silently discard that change -
+        # which is exactly what used to happen. Skip the auto-save instead
+        # and let "Save config" (an explicit, deliberate action) be the only
+        # way to overwrite a file that was touched elsewhere.
         try:
-            self.save_config()
-        except OSError:
-            pass
+            with open(CONFIG_FILE, encoding="utf-8") as f:
+                on_disk = json.load(f)
+        except (OSError, ValueError):
+            on_disk = None
+        if on_disk == self._cfg:
+            try:
+                self.save_config()
+            except OSError:
+                pass
+        else:
+            try:
+                with open(LOG_FILE, "a", encoding="utf-8", errors="replace") as f:
+                    f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] "
+                            f"Config file changed on disk since launch - not "
+                            f"auto-saving on close (use Save config to overwrite "
+                            f"it deliberately, or restart to pick up its current "
+                            f"contents)\n")
+            except OSError:
+                pass
         self.router.stop()
         self.root.destroy()
 
