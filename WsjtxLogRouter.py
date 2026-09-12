@@ -7,6 +7,8 @@ several outputs at once:
 
   * UDP forward hosts   - raw datagrams to GridTracker, Hamclock, N1MM+,
                           WRL, etc. (bidirectional, replies rout back to WSJT-X)
+  * HRD output          - QSOs re-encoded as N1MM-style UDP broadcasts for
+                          Ham Radio Deluxe Logbook's QSO Forwarding
   * CQ Radio HTTP       - logged QSOs as JSON to logbook.cqradio.org
   * Generic HTTP ADIF   - logged QSOs as raw ADIF POST to any API
   * ADIF file           - append every logged QSO to a local .adi file
@@ -30,11 +32,12 @@ import sys
 import os
 import traceback
 import xml.etree.ElementTree as ET
+from xml.sax.saxutils import escape as xml_escape
 from datetime import datetime, date, timedelta
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 
 if getattr(sys, "frozen", False):
     _BASE_DIR = os.path.dirname(os.path.abspath(sys.executable))
@@ -417,6 +420,44 @@ def n1mm_to_adif(d):
     return "\n".join(p for p in parts if p) + "\n<EOR>"
 
 
+def encode_n1mm_contactinfo(qso):
+    """Encode a QSO dict as an N1MM Logger+ <contactinfo> UDP broadcast -
+    the XML dialect that both N1MM Logger+ itself and Ham Radio Deluxe
+    Logbook's QSO Forwarding ("UDP Receive") consume. This is the reverse
+    of n1mm_to_adif(): it lets a QSO that was decoded from *any* input
+    (WSJT-X binary or N1MM/DXLog XML) be re-broadcast in N1MM's own
+    format for HRD (or a real N1MM Logger+ instance) to pick up."""
+    freq = qso.get("frequency") or ""
+    try:
+        # N1MM's rxfreq/txfreq are in units of 10 Hz (see n1mm_to_adif).
+        rxfreq = int(round(float(freq) * 1e6 / 10)) if freq else 0
+    except ValueError:
+        rxfreq = 0
+    ts = f"{qso.get('qso_date', '')} {qso.get('time_on', '')}".strip()
+
+    def tag(name, value):
+        return f"<{name}>{xml_escape('' if value is None else str(value))}</{name}>"
+
+    parts = [
+        tag("app", "WsjtxLogRouter"),
+        tag("timestamp", ts),
+        tag("mycall", qso.get("my_callsign", "")),
+        tag("band", (qso.get("band") or "").rstrip("Mm")),
+        tag("rxfreq", rxfreq),
+        tag("txfreq", rxfreq),
+        tag("mode", qso.get("mode", "")),
+        tag("call", qso.get("callsign", "")),
+        tag("gridsquare", qso.get("grid_square", "")),
+        tag("snt", qso.get("rst_sent", "")),
+        tag("rcv", qso.get("rst_rcvd", "")),
+        tag("name", qso.get("name", "")),
+        tag("comment", qso.get("comment", "")),
+        tag("power", qso.get("tx_power", "")),
+        tag("IsRunQSO", "0"),
+    ]
+    return "<contactinfo>" + "".join(parts) + "</contactinfo>"
+
+
 # ─── Engine ──────────────────────────────────────────────────────
 
 class Router:
@@ -426,9 +467,11 @@ class Router:
         self.inputs = []               # list of dict {type: wsjtx|n1mm, port} (dxlog -> n1mm)
         self.udp_outputs = []          # list of (host, port)
         self.http_outputs = []         # list of dict {name, url, key, cqradio:bool}
+        self.hrd_outputs = []          # list of dict {name, host, port} - N1MM XML re-broadcast
         self.adif_path = None
         self.running = False
         self._sockets = {}
+        self._hrd_socket = None
         self._threads = {}
         self._kind = {}                # port -> input type
         self._mapping = {}             # forward addr -> {client: last_seen}
@@ -447,11 +490,18 @@ class Router:
                 self.inputs.append({"type": "wsjtx", "port": int(item)})
         self.udp_outputs = []
         self.http_outputs = []
+        self.hrd_outputs = []
         self.adif_path = None
         for out in cfg.get("outputs", []):
             t = out.get("type")
             if t == "udp":
                 self.udp_outputs.append((out["host"], int(out["port"])))
+            elif t == "hrd":
+                self.hrd_outputs.append({
+                    "name": out.get("name", "HRD"),
+                    "host": out.get("host", "127.0.0.1"),
+                    "port": int(out.get("port", 2333)),
+                })
             elif t == "cqradio":
                 self.http_outputs.append({
                     "name": out.get("name", "CQ Radio"),
@@ -494,6 +544,13 @@ class Router:
             return
         for host, port in self.udp_outputs:
             key = "udp:%s:%s" % (host, port)
+            self._last_call[key] = call
+            try:
+                self.qsofn((key, call, "sent"))
+            except Exception:
+                pass
+        for o in self.hrd_outputs:
+            key = "hrd:%s:%s" % (o["host"], o["port"])
             self._last_call[key] = call
             try:
                 self.qsofn((key, call, "sent"))
@@ -557,6 +614,14 @@ class Router:
                 return
         for host, port in self.udp_outputs:
             self._log(f"Output: UDP forward to {host}:{port}")
+        if self.hrd_outputs:
+            try:
+                self._hrd_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            except OSError as e:
+                self._log(f"ERROR: cannot create HRD output socket: {e}")
+                self._hrd_socket = None
+        for o in self.hrd_outputs:
+            self._log(f"Output: HRD '{o['name']}' -> {o['host']}:{o['port']} (N1MM XML)")
         for o in self.http_outputs:
             self._log(f"Output: HTTP '{o['name']}' -> {o['url']}"
                       + (" (API key set)" if o["key"] else " (no key)"))
@@ -575,6 +640,12 @@ class Router:
                 pass
         self._sockets = {}
         self._threads = {}
+        if self._hrd_socket is not None:
+            try:
+                self._hrd_socket.close()
+            except OSError:
+                pass
+            self._hrd_socket = None
         self._log("Router stopped.")
 
     # ---- RX loop ----
@@ -664,6 +735,7 @@ class Router:
                   f"{qso.get('mode', '')} {qso.get('frequency', '')}")
         self._emit_qso(call)
         self._dispatch_http(adif, qso)
+        self._dispatch_hrd(qso)
         self._append_adif(adif)
         if source == "n1mm" and self.udp_outputs:
             try:
@@ -683,6 +755,27 @@ class Router:
             return
         for o in self.http_outputs:
             threading.Thread(target=self._post, args=(o, adif, qso), daemon=True).start()
+
+    def _dispatch_hrd(self, qso):
+        """Re-broadcast the QSO as an N1MM <contactinfo> UDP packet to every
+        configured HRD output - this is how HRD Logbook's QSO Forwarding
+        (UDP Receive) picks up QSOs regardless of whether they originally
+        came in as WSJT-X binary or N1MM/DXLog XML. Fire-and-forget UDP,
+        like the plain udp_outputs forward - no delivery confirmation is
+        possible, so status is always reported as "sent" (gray dot)."""
+        if not self.hrd_outputs or self._hrd_socket is None:
+            return
+        try:
+            packet = encode_n1mm_contactinfo(qso).encode("utf-8")
+        except Exception as e:
+            self._log(f"ERROR: can't encode HRD packet: {e}")
+            return
+        for o in self.hrd_outputs:
+            try:
+                self._hrd_socket.sendto(packet, (o["host"], o["port"]))
+            except OSError as e:
+                self._log(f"ERROR: can't send to HRD '{o['name']}' "
+                          f"{o['host']}:{o['port']}: {e}")
 
     def _post(self, o, adif, qso):
         key = "http:" + o["url"]
@@ -981,6 +1074,8 @@ class App:
         t = out.get("type")
         if t == "udp":
             return "udp:%s:%s" % (out.get("host"), out.get("port"))
+        if t == "hrd":
+            return "hrd:%s:%s" % (out.get("host"), out.get("port"))
         if t in ("cqradio", "wavelog", "http"):
             return "http:" + (out.get("url", ""))
         if t == "adif":
@@ -990,7 +1085,7 @@ class App:
     @staticmethod
     def out_label(out):
         t = out.get("type")
-        if t == "udp":
+        if t in ("udp", "hrd"):
             return f"{out.get('host')}:{out.get('port')}"
         if t in ("cqradio", "wavelog", "http"):
             return out.get("url", "")
@@ -1162,7 +1257,7 @@ class App:
             n = name_var.get().strip()
             t = type_var.get()
             out = {"type": t, "name": n}
-            if t == "udp":
+            if t in ("udp", "hrd"):
                 out.update(host=host_var.get().strip(), port=int(port_var.get().strip()))
             elif t in ("cqradio", "wavelog", "http"):
                 out.update(url=url_var.get().strip(), key=key_var.get().strip())
@@ -1175,7 +1270,7 @@ class App:
         def ok():
             try:
                 o = rec()
-                if o["type"] == "udp" and not (o.get("host") and 1 <= o["port"] <= 65535):
+                if o["type"] in ("udp", "hrd") and not (o.get("host") and 1 <= o["port"] <= 65535):
                     raise ValueError("bad host:port")
                 if o["type"] in ("cqradio", "wavelog", "http") and not o.get("url"):
                     raise ValueError("URL required")
@@ -1202,10 +1297,16 @@ class App:
 
         ttk.Label(frm, text="Type:").grid(row=0, column=0, sticky="w")
         type_var = tk.StringVar(value=defaults["type"])
-        combos = ["udp", "cqradio", "wavelog", "http", "adif"]
+        combos = ["udp", "hrd", "cqradio", "wavelog", "http", "adif"]
         type_combo = ttk.Combobox(frm, textvariable=type_var, values=combos, width=20, state="readonly")
         type_combo.grid(row=0, column=1, sticky="w", pady=3)
-        type_combo.bind("<<ComboboxSelected>>", lambda e: update_form())
+
+        def on_type(*_a):
+            if type_var.get() == "hrd" and port_var.get() in ("", "2238"):
+                port_var.set("2333")
+            update_form()
+
+        type_combo.bind("<<ComboboxSelected>>", on_type)
 
         ttk.Label(frm, text="Name:").grid(row=1, column=0, sticky="w")
         name_var = tk.StringVar(value=defaults["name"])
@@ -1241,7 +1342,8 @@ class App:
         ttk.Button(btns, text="OK", command=ok).pack(side="left", padx=4)
         ttk.Button(btns, text="Cancel", command=dlg.destroy).pack(side="left", padx=4)
 
-        rows = {"udp": [2, 3], "cqradio": [4, 5], "wavelog": [4, 5, 7], "http": [4, 5], "adif": [6]}
+        rows = {"udp": [2, 3], "hrd": [2, 3], "cqradio": [4, 5], "wavelog": [4, 5, 7],
+                "http": [4, 5], "adif": [6]}
         row_widgets = {row: frm.grid_slaves(row=row) for row in range(2, 8)}
 
         def update_form():

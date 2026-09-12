@@ -4,7 +4,8 @@ A small, dependency-free GUI router for amateur radio logging. It listens for
 QSO events emitted over UDP by **WSJT-X**, **N1MM Logger+** and **DXLog** and
 forwards them to several destinations at once:
 
-- raw UDP forward (QLog, JTAlert, GridTracker, HRD, World Radio League, ...)
+- raw UDP forward (QLog, JTAlert, GridTracker, World Radio League, ...)
+- Ham Radio Deluxe Logbook (N1MM-style UDP broadcast, "QSO Forwarding")
 - Wavelog (self-hosted logbook, HTTP/ADIF)
 - CQ Radio (logbook.cqradio.org, HTTP/JSON)
 - any generic HTTP endpoint (raw ADIF POST)
@@ -34,12 +35,12 @@ docs/               screenshots used by this README
                    └──────────┬───────────┘
                               │ decodes both protocols into ADIF
                               ▼
-              ┌───────────────┼────────────────┐
-              ▼               ▼                ▼
-        UDP forward    HTTP outputs        ADIF file
-        (raw datagrams)  │      │
-                         ▼      ▼
-                     Wavelog  CQ Radio / generic HTTP
+              ┌───────────────┼───────────────┬────────────────┐
+              ▼               ▼               ▼                ▼
+        UDP forward      HRD output     HTTP outputs        ADIF file
+        (raw datagrams)  (N1MM XML,       │      │
+                          synthesised)     ▼      ▼
+                                       Wavelog  CQ Radio / generic HTTP
 
 - **WSJT-X input (port 2237):** decodes the WSJT-X binary UDP protocol
   (`magic 0xADBCCBDA`, schema-2/schema-3, message types). Only QSO events
@@ -58,6 +59,9 @@ docs/               screenshots used by this README
   mirror, so the router *synthesises* a WSJT-X `QSOLogged` datagram from the
   decoded ADIF and sends that instead — meaning N1MM/DXLog contacts also land
   in apps that only speak the WSJT-X UDP protocol (e.g. QLog).
+- **HRD output:** every QSO (regardless of input) is *also* re-encoded as
+  an N1MM-style `<contactinfo>` UDP broadcast for Ham Radio Deluxe
+  Logbook's QSO Forwarding — see "Ham Radio Deluxe" below.
 - **Start / Stop** buttons control the listeners; the router can also
   auto-start on launch (and start automatically with Windows — see below).
 
@@ -96,6 +100,42 @@ Verified against DXLog.net v2.6.34.
 
 ![DXLog.net – Options → Broadcast](docs/dxlog-broadcast-setup.png)
 
+## Ham Radio Deluxe
+
+Add an `hrd` output (`host`/`port`, default port `2333`) and every QSO the
+router handles — from WSJT-X, N1MM+ or DXLog alike — is re-broadcast as an
+N1MM-style `<contactinfo>` UDP packet, which is exactly what HRD Logbook's
+**QSO Forwarding → UDP Receive** consumes. On the HRD side: **Logbook →
+Tools → QSO Forwarding**, tick **UDP Receive**, set the port to match (2333
+by default), leave the IP as `127.0.0.1`.
+
+**Same PC as HRD:** set the `hrd` output's `host` to `127.0.0.1` — done.
+
+**HRD on a different PC (e.g. connected via ZeroTier or another VPN/LAN):**
+this is *not* guaranteed to work. HRD's own documentation describes UDP
+Receive strictly in terms of localhost (127.0.0.1) with no mention of a
+remote/different computer, which suggests it may only ever bind its
+listening socket to loopback — in which case a packet arriving over
+ZeroTier (addressed to the PC's ZeroTier IP, not `127.0.0.1`) would never
+reach it, no matter how the sender is configured. ZeroTier itself is not
+the obstacle here (unicast UDP across a ZeroTier network behaves like
+ordinary LAN UDP once both peers are online), so if pointing the `hrd`
+output straight at the HRD PC's ZeroTier IP doesn't show up in HRD, don't
+keep tweaking the network — use the relay pattern instead:
+
+1. Run a second, minimal instance of WsjtxLogRouter **on the HRD PC**.
+2. Give it an `n1mm` input bound to `0.0.0.0` on some free port (inputs
+   already bind all interfaces, so this receives the forwarded packet from
+   the remote PC over ZeroTier).
+3. Give it an `hrd` output pointed at `127.0.0.1:2333` (loopback, same PC
+   as HRD) — satisfies HRD's own expectation regardless of how its socket
+   is actually bound.
+
+Either way, also check Windows Firewall on the HRD PC: ZeroTier's virtual
+adapter is often classified as a **Public** network, which blocks
+unsolicited inbound UDP by default — set it to **Private**, or add an
+explicit inbound rule for the port, if packets seem to vanish.
+
 ## Configuration
 
 ### Via the GUI
@@ -129,6 +169,7 @@ reads the file at launch):
 | type | fields | behaviour |
 |------|--------|-----------|
 | `udp`   | `host`, `port` | raw datagram mirror to host:port (e.g. QLog `127.0.0.1:2240`); for N1MM/DXLog QSOs a synthesized WSJT-X `QSOLogged` packet is sent instead |
+| `hrd`   | `host`, `port` | every logged QSO (from *any* input) re-encoded as an N1MM-style `<contactinfo>` UDP broadcast, for Ham Radio Deluxe Logbook's **QSO Forwarding → UDP Receive** (default port `2333`) — see "Ham Radio Deluxe" below |
 | `wavelog` | `url`, `key`, `station` | POST `{type:"adif", string, key, station_profile_id}` to the Wavelog v1 API (`.../index.php/api/qso`); logs the HTTP status/body |
 | `cqradio` | `url`, `key` | POST the QSO dict as JSON to logbook.cqradio.org (`Authorization: Bearer` + `X-API-KEY`) |
 | `http`  | `url`, `key` | POST the raw ADIF text (`Content-Type: text/adif`) to any API |
@@ -144,6 +185,7 @@ Example:
   ],
   "outputs": [
     { "type": "udp", "host": "127.0.0.1", "port": 2240, "name": "QLog" },
+    { "type": "hrd", "host": "127.0.0.1", "port": 2333, "name": "HRD" },
     {
       "type": "wavelog",
       "name": "Wavelog",
@@ -214,6 +256,12 @@ python WsjtxLogRouter.py
   server set to `127.0.0.1:2237`, and that the router shows green Start.
 - **Every QSO posts twice to Wavelog/CQ Radio/HTTP:** fixed in 1.2.0 (see
   Duplicate suppression above) — update if you're on an older build.
+- **HRD never receives anything:** check `WsjtxLogRouter.log` for
+  `Output: HRD '<name>' -> host:port` at startup (confirms the output is
+  configured) — the `hrd` output is fire-and-forget UDP, so there is no
+  error logged if nothing is listening on the other end. If HRD is on a
+  different PC, see "Ham Radio Deluxe" above (loopback-only limitation +
+  firewall).
 - **A destination's status dot stays red:** an HTTP output's last POST
   failed; check `WsjtxLogRouter.log` for the `HTTP ERROR '<name>': ...`
   line for the actual response/reason.

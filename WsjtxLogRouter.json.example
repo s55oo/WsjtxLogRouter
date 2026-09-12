@@ -13,6 +13,12 @@
       "name": "QLog"
     },
     {
+      "type": "hrd",
+      "name": "HRD",
+      "host": "127.0.0.1",
+      "port": 2333
+    },
+    {
       "type": "wavelog",
       "name": "Wavelog",
       "url": "http://your-wavelog-host:8086/index.php/api/qso",
