@@ -528,13 +528,14 @@ class Router:
                         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
                     except OSError:
                         pass
-                sock.bind(("0.0.0.0", port))
+                listen_addr = "0.0.0.0" if kind == "n1mm" else "127.0.0.1"
+                sock.bind((listen_addr, port))
                 sock.settimeout(0.5)
                 self._sockets[port] = sock
                 th = threading.Thread(target=self._rx_loop, args=(port, sock), daemon=True)
                 self._threads[port] = th
                 th.start()
-                self._log(f"Input: {kind.upper()} listening on UDP 0.0.0.0:{port}")
+                self._log(f"Input: {kind.upper()} listening on UDP {listen_addr}:{port}")
             except OSError as e:
                 self._log(f"ERROR: cannot bind port {port}: {e}")
                 self.running = False
@@ -626,10 +627,19 @@ class Router:
             return
         fields = parse_adif(adif)
         qso = adif_to_qso(fields)
+        freq_raw = qso.get("frequency", "").strip()
+        try:
+            # Normalize numerically: QSOLogged-derived ADIF strips trailing
+            # zeros (e.g. "14.07508") while WSJT-X's own LoggedADIF keeps
+            # fixed 6-decimal precision (e.g. "14.075080") for the same QSO -
+            # compare as floats so the two don't defeat deduplication.
+            freq_key = round(float(freq_raw), 6) if freq_raw else ""
+        except ValueError:
+            freq_key = freq_raw
         key = (qso.get("callsign", "").strip().upper(),
                qso.get("qso_date", ""),
                qso.get("mode", "").strip().upper(),
-               qso.get("frequency", "").strip())
+               freq_key)
         now = time.time()
         if key[0] and key in self._recent_qsos and self._recent_qsos[key] > now:
             self._log(f"  !! duplicate {key[0]} {key[1]} {key[2]} - skipped")
@@ -727,6 +737,8 @@ class App:
         self.qso_q = queue.Queue()
         self.router = Router(self.log_q.put, self.qso_q.put)
         self._last_calls = {}          # output key -> last callsign sent
+        self._last_qso = ("", "")      # (callsign, hh:mm:ss)
+        self._view = "min"
 
         import tkinter as tk
         from tkinter import ttk, messagebox
@@ -734,24 +746,66 @@ class App:
         self.ttk = ttk
         self.messagebox = messagebox
 
-        top = ttk.Frame(root, padding=8)
-        top.pack(fill="x")
-
-        self.start_btn = tk.Button(top, text="Start", command=self.on_start,
-                                   relief="raised", bd=1)
-        self.start_btn.pack(side="left", padx=(0, 4))
-        self.stop_btn = tk.Button(top, text="Stop", command=self.on_stop,
+        hdr = ttk.Frame(root, padding=(8, 8, 8, 0))
+        hdr.pack(fill="x")
+        self.status_var = tk.StringVar(value="Idle")
+        self.status_lbl = tk.Label(
+            hdr, textvariable=self.status_var, anchor="w",
+            font=("Segoe UI", 11, "bold"))
+        self.status_lbl.pack(side="left")
+        self.toggle_btn = ttk.Button(hdr, text="Details \u25b8", command=self.toggle_view)
+        self.toggle_btn.pack(side="right")
+        ttk.Button(hdr, text="Save config", command=self.on_save).pack(side="right", padx=(0, 4))
+        self.stop_btn = tk.Button(hdr, text="Stop", command=self.on_stop,
                                   relief="raised", bd=1)
-        self.stop_btn.pack(side="left", padx=4)
-        ttk.Button(top, text="Save config", command=self.on_save).pack(side="left", padx=(4, 0))
+        self.stop_btn.pack(side="right", padx=(0, 4))
+        self.start_btn = tk.Button(hdr, text="Start", command=self.on_start,
+                                   relief="raised", bd=1)
+        self.start_btn.pack(side="right", padx=(0, 4))
 
-        panes = ttk.PanedWindow(root, orient="horizontal")
+        self.min_frame = ttk.Frame(root, padding=8)
+        self._build_min()
+        self.details_frame = ttk.Frame(root)
+        self._build_details()
+        self.min_frame.pack(fill="both", expand=True)
+
+        self.load_config()
+        self.render()
+        root.after(150, self.poll_log)
+        root.protocol("WM_DELETE_WINDOW", self.on_close)
+        root.after(100, self.on_start)
+
+    # ---- views ----
+    def _build_min(self):
+        f = self.min_frame
+        card = ttk.Frame(f)
+        card.pack(fill="x", pady=(0, 8))
+        ttk.Label(card, text="Last QSO   ").pack(side="left")
+        self.min_qso_var = tk.StringVar(value="\u2014")
+        ttk.Label(card, textvariable=self.min_qso_var,
+                  font=("Segoe UI", 13, "bold")).pack(side="left", padx=8)
+
+        self.min_inputs_var = tk.StringVar(value="")
+        ttk.Label(f, textvariable=self.min_inputs_var,
+                  foreground="#666666").pack(anchor="w", pady=(0, 6))
+
+        ttk.Label(f, text="Destinations").pack(anchor="w")
+        self.min_tree = ttk.Treeview(f, columns=("dest", "last"), height=6,
+                                     show="headings")
+        self.min_tree.heading("dest", text="Destination")
+        self.min_tree.heading("last", text="Last call")
+        self.min_tree.column("dest", width=210)
+        self.min_tree.column("last", width=150, anchor="center")
+        self.min_tree.pack(fill="both", expand=True, pady=(2, 0))
+
+    def _build_details(self):
+        panes = ttk.PanedWindow(self.details_frame, orient="horizontal")
         panes.pack(fill="both", expand=True, padx=8, pady=(4, 0))
 
-        # ---- inputs ----
         left = ttk.Frame(panes)
         ttk.Label(left, text="UDP Inputs (listen ports)").pack(anchor="w")
-        self.in_tree = ttk.Treeview(left, columns=("kind", "port"), height=8, show="headings")
+        self.in_tree = ttk.Treeview(left, columns=("kind", "port"), height=8,
+                                    show="headings")
         self.in_tree.heading("kind", text="Type")
         self.in_tree.heading("port", text="Listen port")
         self.in_tree.column("kind", width=70)
@@ -764,7 +818,6 @@ class App:
         ib.pack(anchor="w")
         panes.add(left, weight=1)
 
-        # ---- outputs ----
         right = ttk.Frame(panes)
         ttk.Label(right, text="Outputs").pack(anchor="w")
         self.out_tree = ttk.Treeview(
@@ -783,16 +836,24 @@ class App:
         ob.pack(anchor="w")
         panes.add(right, weight=4)
 
-        # ---- log ----
-        ttk.Label(root, text="Activity log").pack(anchor="w", padx=8, pady=(6, 0))
-        self.log_text = tk.Text(root, height=12, state="disabled", wrap="word")
+        ttk.Label(self.details_frame, text="Activity log").pack(anchor="w", padx=8,
+                                                                pady=(6, 0))
+        self.log_text = tk.Text(self.details_frame, height=12, state="disabled",
+                                wrap="word")
         self.log_text.pack(fill="both", expand=True, padx=8, pady=4)
 
-        self.load_config()
-        self.render()
-        root.after(150, self.poll_log)
-        root.protocol("WM_DELETE_WINDOW", self.on_close)
-        root.after(100, self.on_start)
+    def toggle_view(self):
+        if self._view == "min":
+            self.min_frame.pack_forget()
+            self.details_frame.pack(fill="both", expand=True)
+            self.details_frame.update_idletasks()
+            self._view = "details"
+            self.toggle_btn.configure(text="Minimal \u25c2")
+        else:
+            self.details_frame.pack_forget()
+            self.min_frame.pack(fill="both", expand=True)
+            self._view = "min"
+            self.toggle_btn.configure(text="Details \u25b8")
 
     # ---- helpers ----
     def log(self, msg):
