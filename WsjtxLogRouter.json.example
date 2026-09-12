@@ -1,0 +1,29 @@
+{
+  "inputs": [
+    {
+      "type": "wsjtx",
+      "port": 2237
+    }
+  ],
+  "outputs": [
+    {
+      "type": "udp",
+      "host": "127.0.0.1",
+      "port": 2240,
+      "name": "QLog"
+    },
+    {
+      "type": "wavelog",
+      "name": "Wavelog",
+      "url": "http://your-wavelog-host:8086/index.php/api/qso",
+      "key": "YOUR_WAVELOG_API_KEY",
+      "station": "1"
+    },
+    {
+      "type": "cqradio",
+      "name": "YOUR_CALLSIGN",
+      "url": "https://logbook.cqradio.org/api/wsjtx/log",
+      "key": "YOUR_CQRADIO_API_KEY"
+    }
+  ]
+}
