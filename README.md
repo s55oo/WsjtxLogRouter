@@ -25,12 +25,12 @@ docs/               screenshots used by this README
 ## How it works
 
                    ┌──────────────────────┐
-    WSJT-X  UDP ──►│ 127.0.0.1:2237       │
+    WSJT-X  UDP ──►│ 0.0.0.0:2237         │
                    │   (binary WSJT-X     │
                    │    UDP protocol)     │
-    N1MM+/DXLog UDP ►│ 127.0.0.1:12060      │  Router (this app)
-                   │   (N1MM-style XML      │
-                   │    broadcasts)         │
+    N1MM+/DXLog UDP ►│ 0.0.0.0:12060       │  Router (this app)
+                   │   (N1MM-style XML     │
+                   │    broadcasts)        │
                    └──────────┬───────────┘
                               │ decodes both protocols into ADIF
                               ▼
@@ -50,6 +50,10 @@ docs/               screenshots used by this README
 - **UDP forward outputs:** every received datagram is mirrored to the
   configured `host:port` (that is what QLog uses to get the raw WSJT-X
   packets). Replies from forwarded apps are routed back to the sender.
+  QSOs that originate from N1MM+ / DXLog have no binary WSJT-X packet to
+  mirror, so the router *synthesises* a WSJT-X `QSOLogged` datagram from the
+  decoded ADIF and sends that instead — meaning N1MM/DXLog contacts also land
+  in apps that only speak the WSJT-X UDP protocol (e.g. QLog).
 - **Start / Stop** buttons control the listeners; the router can also
   auto-start on launch (and start automatically with Windows — see below).
 
@@ -68,7 +72,10 @@ either (or both, on different ports).
   the router forwards).
 - **External Callsign Lookup** – optional `lookupinfo` packets.
 
-Destination **`127.0.0.1:12060`** (when the router runs on the same PC).
+Destination **`127.0.0.1:12060`** when the router runs on the same PC, or the
+PC's LAN broadcast (e.g. `192.168.0.255:12060`) — the router listens on
+`0.0.0.0` (all interfaces), so it receives loopback unicast *and* subnet
+broadcasts on any adapter.
 
 ### DXLog.net
 
@@ -105,7 +112,7 @@ reads the file at launch):
 
 | type | fields | behaviour |
 |------|--------|-----------|
-| `udp`   | `host`, `port` | raw datagram mirror to host:port (e.g. QLog `127.0.0.1:2240`) |
+| `udp`   | `host`, `port` | raw datagram mirror to host:port (e.g. QLog `127.0.0.1:2240`); for N1MM/DXLog QSOs a synthesized WSJT-X `QSOLogged` packet is sent instead |
 | `wavelog` | `url`, `key`, `station` | POST `{type:"adif", string, key, station_profile_id}` to the Wavelog v1 API (`.../index.php/api/qso`); logs the HTTP status/body |
 | `cqradio` | `url`, `key` | POST the QSO dict as JSON to logbook.cqradio.org (`Authorization: Bearer` + `X-API-KEY`) |
 | `http`  | `url`, `key` | POST the raw ADIF text (`Content-Type: text/adif`) to any API |

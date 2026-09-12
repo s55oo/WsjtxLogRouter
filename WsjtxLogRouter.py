@@ -34,7 +34,7 @@ from datetime import datetime, date, timedelta
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 if getattr(sys, "frozen", False):
     _BASE_DIR = os.path.dirname(os.path.abspath(sys.executable))
@@ -322,6 +322,55 @@ def qsol_logged_to_adif(d):
     return "\n".join(p for p in parts if p) + "\n<EOR>"
 
 
+def encode_qso_logged(qso, sender="WsjtxLog"):
+    """Encode a WSJT-X schema-2 QSOLogged (type 5) datagram from a QSO dict."""
+    def wstr(v):
+        b = str(v or "").encode("utf-8")
+        return struct.pack(">i", len(b)) + b
+
+    def wqdt(date_str, time_str):
+        dt = None
+        try:
+            if date_str and len(time_str) >= 5:
+                y, mo, d = (int(x) for x in date_str.split("-")[:3])
+                t = [int(x) for x in time_str.split(":")]
+                dt = datetime(y, mo, d, *t)
+        except (TypeError, ValueError):
+            dt = None
+        if dt is None:
+            return struct.pack(">qIB", 2440588, 0, 1)
+        jdn = dt.date().toordinal() + 1721425
+        ms = dt.hour * 3600000 + dt.minute * 60000 + dt.second * 1000
+        return struct.pack(">qIB", jdn, ms, 1)
+
+    freq = qso.get("frequency") or ""
+    try:
+        freq_hz = int(round(float(freq) * 1e6)) if freq else 0
+    except ValueError:
+        freq_hz = 0
+    call = qso.get("callsign") or ""
+    my_call = qso.get("my_callsign") or ""
+    ts = (qso.get("qso_date") or "", qso.get("time_on") or "")
+    payload = wstr(sender)
+    payload += wqdt(*ts)                                  # date_off
+    payload += wstr(call)
+    payload += wstr(qso.get("grid_square"))
+    payload += struct.pack(">Q", freq_hz)
+    payload += wstr(qso.get("mode"))
+    payload += wstr(qso.get("rst_sent"))
+    payload += wstr(qso.get("rst_rcvd"))
+    payload += wstr(qso.get("tx_power"))
+    payload += wstr(qso.get("comment"))
+    payload += wstr(qso.get("name"))
+    payload += wqdt(*ts)                                  # date_on
+    payload += wstr(my_call)                              # operator
+    payload += wstr(my_call)                              # my_call
+    payload += wstr(qso.get("my_grid"))
+    payload += wstr("")                                   # exch_sent
+    payload += wstr("")                                   # exch_rcvd
+    return struct.pack(">III", MAGIC, 2, 5) + payload
+
+
 def decode_n1mm(data):
     """Decode an N1MM Logger+ UDP XML datagram -> (message_name, field_dict)."""
     try:
@@ -473,18 +522,19 @@ class Router:
             try:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
                 if hasattr(socket, "SO_REUSEPORT"):
                     try:
                         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
                     except OSError:
                         pass
-                sock.bind(("127.0.0.1", port))
+                sock.bind(("0.0.0.0", port))
                 sock.settimeout(0.5)
                 self._sockets[port] = sock
                 th = threading.Thread(target=self._rx_loop, args=(port, sock), daemon=True)
                 self._threads[port] = th
                 th.start()
-                self._log(f"Input: {kind.upper()} listening on UDP 127.0.0.1:{port}")
+                self._log(f"Input: {kind.upper()} listening on UDP 0.0.0.0:{port}")
             except OSError as e:
                 self._log(f"ERROR: cannot bind port {port}: {e}")
                 self.running = False
@@ -565,13 +615,13 @@ class Router:
         if name in ("contactinfo", "contactreplace"):
             self._log(f"[n1mm:{port}] {name}: {d.get('call', '')} "
                       f"{d.get('mode', '')} @ {d.get('timestamp', '')}")
-            self._dispatch_adif(n1mm_to_adif(d))
+            self._dispatch_adif(n1mm_to_adif(d), source="n1mm", port=port)
         elif name == "contactdelete":
             self._log(f"[n1mm:{port}] contact deleted {d.get('call', '')}")
         elif name in ("radioinfo", "appinfo", "lookupinfo", "spot"):
             pass
 
-    def _dispatch_adif(self, adif):
+    def _dispatch_adif(self, adif, source=None, port=None):
         if not adif or not adif.strip():
             return
         fields = parse_adif(adif)
@@ -594,6 +644,18 @@ class Router:
         self._emit_qso(call)
         self._dispatch_http(adif, qso)
         self._append_adif(adif)
+        if source == "n1mm" and self.udp_outputs:
+            try:
+                packet = encode_qso_logged(qso)
+            except Exception:
+                return
+            sock = self._sockets.get(port)
+            if sock is not None:
+                for fwd in self.udp_outputs:
+                    try:
+                        sock.sendto(packet, fwd)
+                    except OSError as e:
+                        self._log(f"ERROR: can't send synthesized QSO to {fwd[0]}:{fwd[1]}: {e}")
 
     def _dispatch_http(self, adif, qso):
         if not self.http_outputs:
@@ -697,6 +759,7 @@ class App:
         self.in_tree.pack(fill="both", expand=True, pady=2)
         ib = ttk.Frame(left)
         ttk.Button(ib, text="Add", command=self.add_input).pack(side="left")
+        ttk.Button(ib, text="Edit", command=self.edit_input).pack(side="left", padx=4)
         ttk.Button(ib, text="Remove", command=self.del_input).pack(side="left", padx=4)
         ib.pack(anchor="w")
         panes.add(left, weight=1)
@@ -836,24 +899,24 @@ class App:
         return ""
 
     # ---- input dialogs ----
-    def add_input(self):
+    def input_dialog(self, title, current=None):
         import tkinter as tk
         from tkinter import ttk
         top = self.tk.Toplevel(self.root)
-        top.title("Add input")
+        top.title(title)
         top.resizable(False, False)
         top.transient(self.root)
         top.grab_set()
         frm = ttk.Frame(top, padding=10)
         frm.pack(fill="both", expand=True)
         ttk.Label(frm, text="Input type:").grid(row=0, column=0, sticky="w", pady=2)
-        kind_var = tk.StringVar(value="wsjtx")
+        kind_var = tk.StringVar(value=current[0] if current else "wsjtx")
         kind_box = ttk.Combobox(
             frm, textvariable=kind_var, state="readonly",
             values=("wsjtx", "n1mm"))
         kind_box.grid(row=0, column=1, sticky="we", pady=2, padx=(6, 0))
         ttk.Label(frm, text="Listen port:").grid(row=1, column=0, sticky="w", pady=2)
-        port_var = tk.StringVar(value="2237")
+        port_var = tk.StringVar(value=str(current[1]) if current else "2237")
         ttk.Entry(frm, textvariable=port_var, width=12).grid(
             row=1, column=1, sticky="we", pady=2, padx=(6, 0))
 
@@ -871,10 +934,13 @@ class App:
             except ValueError:
                 self.messagebox.showerror("Invalid", "Port must be a number", parent=top)
                 return
-            self.in_tree.insert("", "end", values=(kind_var.get(), p))
+            if not (1 <= p <= 65535):
+                self.messagebox.showerror("Invalid", "Port out of range", parent=top)
+                return
+            top.result = (kind_var.get(), p)
             top.destroy()
 
-        ttk.Button(btn, text="Add", command=ok).pack(side="right")
+        ttk.Button(btn, text="OK", command=ok).pack(side="right")
         ttk.Button(btn, text="Cancel", command=top.destroy).pack(side="right", padx=4)
 
         top.bind("<Return>", lambda e: ok())
@@ -884,6 +950,23 @@ class App:
                 port_var_ent = w
         if port_var_ent is not None:
             port_var_ent.focus_set()
+        top.result = None
+        self.root.wait_window(top)
+        return top.result
+
+    def add_input(self):
+        r = self.input_dialog("Add UDP input")
+        if r:
+            self.in_tree.insert("", "end", values=r)
+
+    def edit_input(self):
+        sel = self.in_tree.selection()
+        if not sel:
+            return
+        kind, port = self.in_tree.item(sel[0], "values")
+        r = self.input_dialog("Edit UDP input", current=(kind, int(port)))
+        if r:
+            self.in_tree.item(sel[0], values=r)
 
     def del_input(self):
         sel = self.in_tree.selection()
@@ -1007,15 +1090,16 @@ class App:
         ttk.Button(btns, text="Cancel", command=dlg.destroy).pack(side="left", padx=4)
 
         rows = {"udp": [2, 3], "cqradio": [4, 5], "wavelog": [4, 5, 7], "http": [4, 5], "adif": [6]}
+        row_widgets = {row: frm.grid_slaves(row=row) for row in range(2, 8)}
 
         def update_form():
             t = type_var.get()
-            for row in range(2, 8):
-                for w in frm.grid_slaves(row=row):
-                    w.grid_remove()
-            for row in rows.get(t, []):
-                for w in frm.grid_slaves(row=row):
-                    w.grid()
+            for row, ws in row_widgets.items():
+                for w in ws:
+                    if row in rows.get(t, []):
+                        w.grid()
+                    else:
+                        w.grid_remove()
             dlg.update_idletasks()
             w = dlg.winfo_width()
             h = dlg.winfo_height()
