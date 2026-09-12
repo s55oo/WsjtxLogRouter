@@ -484,30 +484,41 @@ class Router:
             pass
 
     def _emit_qso(self, call):
-        """Notify the GUI of the last callsign dispatched to each output."""
+        """Notify the GUI of the last callsign dispatched to each output.
+
+        HTTP outputs are reported separately by _post(), once the request
+        actually succeeds or fails, so their status reflects real
+        connectivity rather than just an attempted send.
+        """
         if not call or not self.qsofn:
             return
-        for o in self.http_outputs:
-            key = "http:" + o["url"]
-            self._last_call[key] = call
-            try:
-                self.qsofn((key, call))
-            except Exception:
-                pass
         for host, port in self.udp_outputs:
             key = "udp:%s:%s" % (host, port)
             self._last_call[key] = call
             try:
-                self.qsofn((key, call))
+                self.qsofn((key, call, "sent"))
             except Exception:
                 pass
         if self.adif_path:
             key = "adif:" + self.adif_path
             self._last_call[key] = call
             try:
-                self.qsofn((key, call))
+                self.qsofn((key, call, "sent"))
             except Exception:
                 pass
+
+    def _report(self, key, call, status):
+        """Tell the GUI a destination's connection status (and last callsign,
+        if known) just changed - used by _post() to reflect real HTTP
+        success/failure rather than just an attempted send."""
+        if not self.qsofn:
+            return
+        if call:
+            self._last_call[key] = call
+        try:
+            self.qsofn((key, call, status))
+        except Exception:
+            pass
 
     # ---- lifecycle ----
     def start(self):
@@ -674,6 +685,8 @@ class Router:
             threading.Thread(target=self._post, args=(o, adif, qso), daemon=True).start()
 
     def _post(self, o, adif, qso):
+        key = "http:" + o["url"]
+        call = qso.get("callsign") or ""
         try:
             if o.get("wavelog"):
                 payload = json.dumps(self._wavelog_payload(adif, o)).encode("utf-8")
@@ -694,6 +707,7 @@ class Router:
             body = resp.read().decode("utf-8", errors="replace")[:500]
             self._log(f"  HTTP OK '{o['name']}': {resp.status}"
                       + (f" body={body}" if o.get("wavelog") else ""))
+            self._report(key, call, "ok")
         except HTTPError as e:
             body = ""
             try:
@@ -702,10 +716,13 @@ class Router:
                 pass
             self._log(f"  HTTP ERROR '{o['name']}': {e.code}"
                       + (f" body={body}" if o.get("wavelog") else ""))
+            self._report(key, call, "error")
         except URLError as e:
             self._log(f"  HTTP ERROR '{o['name']}': {e.reason}")
+            self._report(key, call, "error")
         except Exception as e:
             self._log(f"  HTTP ERROR '{o['name']}': {e}")
+            self._report(key, call, "error")
 
     @staticmethod
     def _wavelog_payload(adif, o):
@@ -737,7 +754,7 @@ class App:
         self.qso_q = queue.Queue()
         self.router = Router(self.log_q.put, self.qso_q.put)
         self._last_calls = {}          # output key -> last callsign sent
-        self._last_qso = ("", "")      # (callsign, hh:mm:ss)
+        self._last_status = {}         # output key -> "ok" | "error" | "sent"
         self._view = "min"
 
         import tkinter as tk
@@ -791,12 +808,15 @@ class App:
                   foreground="#666666").pack(anchor="w", pady=(0, 6))
 
         ttk.Label(f, text="Destinations").pack(anchor="w")
-        self.min_tree = ttk.Treeview(f, columns=("dest", "last"), height=6,
+        self.min_tree = ttk.Treeview(f, columns=("dest", "status", "last"), height=6,
                                      show="headings")
         self.min_tree.heading("dest", text="Destination")
+        self.min_tree.heading("status", text="")
         self.min_tree.heading("last", text="Last call")
         self.min_tree.column("dest", width=210)
+        self.min_tree.column("status", width=28, anchor="center")
         self.min_tree.column("last", width=150, anchor="center")
+        self._tag_led_colors(self.min_tree)
         self.min_tree.pack(fill="both", expand=True, pady=(2, 0))
 
     def _build_details(self):
@@ -823,13 +843,16 @@ class App:
         right = ttk.Frame(panes)
         ttk.Label(right, text="Outputs").pack(anchor="w")
         self.out_tree = ttk.Treeview(
-            right, columns=("type", "target", "last"), height=9, show="headings")
+            right, columns=("type", "target", "status", "last"), height=9, show="headings")
         self.out_tree.heading("type", text="Type")
         self.out_tree.heading("target", text="Target")
+        self.out_tree.heading("status", text="")
         self.out_tree.heading("last", text="Last call")
         self.out_tree.column("type", width=90)
         self.out_tree.column("target", width=200)
+        self.out_tree.column("status", width=28, anchor="center")
         self.out_tree.column("last", width=100, anchor="center")
+        self._tag_led_colors(self.out_tree)
         self.out_tree.pack(fill="both", expand=True, pady=2)
         ob = ttk.Frame(right)
         ttk.Button(ob, text="Add", command=self.add_output).pack(side="left")
@@ -877,14 +900,18 @@ class App:
             except queue.Empty:
                 break
             try:
-                key, call = item
-                self._last_calls[key] = call
-                self._apply_last(key, call)
+                key, call, status = item
+                if call:
+                    self._last_calls[key] = call
+                    self.min_qso_var.set(f"{call}   {datetime.now().strftime('%H:%M:%S')}")
+                if status:
+                    self._last_status[key] = status
+                self._apply_last(key, call, status)
             except Exception:
                 pass
         self.root.after(150, self.poll_log)
 
-    def _apply_last(self, key, call):
+    def _apply_last(self, key, call, status):
         for i in self.out_tree.get_children():
             tags = self.out_tree.item(i, "tags")
             if not tags:
@@ -893,9 +920,15 @@ class App:
                 out = json.loads(tags[0])
             except ValueError:
                 continue
-            if self.out_key(out) == key:
+            if self.out_key(out) != key:
+                continue
+            if call:
                 self.out_tree.set(i, "last", call)
-                return
+            if status:
+                self.out_tree.set(i, "status", self._status_dot(status))
+                self.out_tree.item(i, tags=(tags[0], status))
+            self._sync_min_tree()
+            return
 
     def cfg(self):
         return {
@@ -931,13 +964,17 @@ class App:
             else:
                 kind, port = "wsjtx", inp
             self.in_tree.insert("", "end", values=(kind, port))
+        self._sync_min_inputs()
         self.out_tree.delete(*self.out_tree.get_children())
         for out in self._cfg.get("outputs", []):
-            label = self.out_label(out)
-            self.out_tree.insert("", "end",
-                                 values=(out.get("type"), label,
-                                         self._last_calls.get(self.out_key(out), "")),
-                                 tags=(json.dumps(out),))
+            key = self.out_key(out)
+            status = self._last_status.get(key, "")
+            self.out_tree.insert(
+                "", "end",
+                values=(out.get("type"), self.out_label(out), self._status_dot(status),
+                         self._last_calls.get(key, "")),
+                tags=(json.dumps(out), status))
+        self._sync_min_tree()
 
     @staticmethod
     def out_key(out):
@@ -960,6 +997,45 @@ class App:
         if t == "adif":
             return out.get("path", "")
         return ""
+
+    @staticmethod
+    def out_name(out):
+        """Short label for the minimal view - the user-assigned name if any,
+        else the same label used in the detailed Outputs tree."""
+        return out.get("name") or App.out_label(out)
+
+    @staticmethod
+    def _status_dot(status):
+        return {"ok": "●", "error": "●", "sent": "○"}.get(status, "")
+
+    @staticmethod
+    def _tag_led_colors(tree):
+        tree.tag_configure("ok", foreground="#2e7d32")
+        tree.tag_configure("error", foreground="#c62828")
+        tree.tag_configure("sent", foreground="#888888")
+
+    def _sync_min_tree(self):
+        """Mirror the (authoritative) detailed Outputs tree into the
+        minimal Destinations tree."""
+        self.min_tree.delete(*self.min_tree.get_children())
+        for i in self.out_tree.get_children():
+            tags = self.out_tree.item(i, "tags")
+            if not tags:
+                continue
+            try:
+                out = json.loads(tags[0])
+            except (ValueError, IndexError):
+                continue
+            status, last = self.out_tree.item(i, "values")[2:4]
+            self.min_tree.insert("", "end", values=(self.out_name(out), status, last),
+                                 tags=tags)
+
+    def _sync_min_inputs(self):
+        summary = [f"{kind.upper()}:{port}"
+                   for kind, port in (self.in_tree.item(i, "values")
+                                      for i in self.in_tree.get_children())]
+        self.min_inputs_var.set(
+            "Listening on " + ", ".join(summary) if summary else "No inputs configured")
 
     # ---- input dialogs ----
     def input_dialog(self, title, current=None):
@@ -1021,6 +1097,7 @@ class App:
         r = self.input_dialog("Add UDP input")
         if r:
             self.in_tree.insert("", "end", values=r)
+            self._sync_min_inputs()
 
     def edit_input(self):
         sel = self.in_tree.selection()
@@ -1030,20 +1107,26 @@ class App:
         r = self.input_dialog("Edit UDP input", current=(kind, int(port)))
         if r:
             self.in_tree.item(sel[0], values=r)
+            self._sync_min_inputs()
 
     def del_input(self):
         sel = self.in_tree.selection()
         if sel:
             self.in_tree.delete(sel[0])
+            self._sync_min_inputs()
 
     # ---- output dialogs ----
     def add_output(self):
         out = self.output_dialog()
         if out:
-            self.out_tree.insert("", "end",
-                                 values=(out.get("type"), self.out_label(out),
-                                         self._last_calls.get(self.out_key(out), "")),
-                                 tags=(json.dumps(out),))
+            key = self.out_key(out)
+            status = self._last_status.get(key, "")
+            self.out_tree.insert(
+                "", "end",
+                values=(out.get("type"), self.out_label(out), self._status_dot(status),
+                        self._last_calls.get(key, "")),
+                tags=(json.dumps(out), status))
+            self._sync_min_tree()
 
     def edit_output(self):
         sel = self.out_tree.selection()
@@ -1052,14 +1135,20 @@ class App:
         current = json.loads(self.out_tree.item(sel[0], "tags")[0])
         out = self.output_dialog(current)
         if out:
-            self.out_tree.item(sel[0], values=(out.get("type"), self.out_label(out),
-                                               self._last_calls.get(self.out_key(out), "")),
-                               tags=(json.dumps(out),))
+            key = self.out_key(out)
+            status = self._last_status.get(key, "")
+            self.out_tree.item(
+                sel[0],
+                values=(out.get("type"), self.out_label(out), self._status_dot(status),
+                        self._last_calls.get(key, "")),
+                tags=(json.dumps(out), status))
+            self._sync_min_tree()
 
     def del_output(self):
         sel = self.out_tree.selection()
         if sel:
             self.out_tree.delete(sel[0])
+            self._sync_min_tree()
 
     def output_dialog(self, current=None):
         import tkinter as tk
@@ -1195,11 +1284,13 @@ class App:
                                      activebackground="#1b5e20", activeforeground="white")
             self.stop_btn.configure(bg="SystemButtonFace", fg="SystemButtonText",
                                     activebackground="#d0d0d0", activeforeground="SystemButtonText")
+            self.status_var.set("Running")
         else:
             self.stop_btn.configure(bg="#c62828", fg="white",
                                     activebackground="#b71c1c", activeforeground="white")
             self.start_btn.configure(bg="SystemButtonFace", fg="SystemButtonText",
                                      activebackground="#d0d0d0", activeforeground="SystemButtonText")
+            self.status_var.set("Stopped")
 
     def on_close(self):
         try:
