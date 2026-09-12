@@ -37,7 +37,7 @@ from datetime import datetime, date, timedelta
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 
-__version__ = "1.4.1"
+__version__ = "1.4.2"
 
 if getattr(sys, "frozen", False):
     _BASE_DIR = os.path.dirname(os.path.abspath(sys.executable))
@@ -455,7 +455,12 @@ def encode_n1mm_contactinfo(qso):
         tag("power", qso.get("tx_power", "")),
         tag("IsRunQSO", "0"),
     ]
-    return "<contactinfo>" + "".join(parts) + "</contactinfo>"
+    # HRD's own documentation shows the expected wire format as starting
+    # with this XML declaration before <contactinfo> - some N1MM-XML
+    # parsers (apparently including HRD's) only recognize a packet as a
+    # valid broadcast if it's present, silently ignoring one without it
+    # even though the socket receives it fine at the network level.
+    return '<?xml version="1.0"?>\n<contactinfo>' + "".join(parts) + "</contactinfo>"
 
 
 # ─── Engine ──────────────────────────────────────────────────────

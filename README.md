@@ -112,29 +112,29 @@ by default), leave the IP as `127.0.0.1`.
 **Same PC as HRD:** set the `hrd` output's `host` to `127.0.0.1` — done.
 
 **HRD on a different PC (e.g. connected via ZeroTier or another VPN/LAN):**
-this is *not* guaranteed to work. HRD's own documentation describes UDP
-Receive strictly in terms of localhost (127.0.0.1) with no mention of a
-remote/different computer, which suggests it may only ever bind its
-listening socket to loopback — in which case a packet arriving over
-ZeroTier (addressed to the PC's ZeroTier IP, not `127.0.0.1`) would never
-reach it, no matter how the sender is configured. ZeroTier itself is not
-the obstacle here (unicast UDP across a ZeroTier network behaves like
-ordinary LAN UDP once both peers are online), so if pointing the `hrd`
-output straight at the HRD PC's ZeroTier IP doesn't show up in HRD, don't
-keep tweaking the network — use the relay pattern instead:
+this works — set the `hrd` output's `host` to the HRD PC's address on that
+network (its ZeroTier IP, for example). HRD's own documentation describes
+UDP Receive only in terms of localhost, which reads as if it only ever
+binds to loopback, but in practice (verified against a real HRD Logbook
+instance) its listening socket binds wherever the OS resolves the local
+machine's address — which, on a PC running ZeroTier, is commonly its
+ZeroTier-assigned IP rather than `127.0.0.1`. Netstat/`Get-NetUDPEndpoint`
+on the HRD PC will show exactly what `HRDLogBook.exe` is actually bound to
+if you want to confirm this for a given setup.
 
-1. Run a second, minimal instance of WsjtxLogRouter **on the HRD PC**.
-2. Give it an `n1mm` input bound to `0.0.0.0` on some free port (inputs
-   already bind all interfaces, so this receives the forwarded packet from
-   the remote PC over ZeroTier).
-3. Give it an `hrd` output pointed at `127.0.0.1:2333` (loopback, same PC
-   as HRD) — satisfies HRD's own expectation regardless of how its socket
-   is actually bound.
+If QSOs still don't show up in HRD once the network path is confirmed
+working (e.g. a Wireshark capture on the HRD PC's ZeroTier adapter, filter
+`udp.port == 2333`, shows the packet arriving), check Windows Firewall on
+the HRD PC next — ZeroTier's virtual adapter is often classified as a
+**Public** network, which blocks unsolicited inbound UDP by default; set
+it to **Private**, or add an explicit inbound rule for the port.
 
-Either way, also check Windows Firewall on the HRD PC: ZeroTier's virtual
-adapter is often classified as a **Public** network, which blocks
-unsolicited inbound UDP by default — set it to **Private**, or add an
-explicit inbound rule for the port, if packets seem to vanish.
+If the packet demonstrably arrives (Wireshark) but HRD still won't show
+it even with firewall ruled out, the fallback is a relay: run a second,
+minimal instance of WsjtxLogRouter **on the HRD PC** with an `n1mm` input
+bound to `0.0.0.0` on some free port (receives the forwarded packet) and
+an `hrd` output pointed at `127.0.0.1:2333` (guaranteed-loopback, same PC
+as HRD) — but this shouldn't normally be necessary.
 
 ## Configuration
 
@@ -259,9 +259,13 @@ python WsjtxLogRouter.py
 - **HRD never receives anything:** check `WsjtxLogRouter.log` for
   `Output: HRD '<name>' -> host:port` at startup (confirms the output is
   configured) — the `hrd` output is fire-and-forget UDP, so there is no
-  error logged if nothing is listening on the other end. If HRD is on a
-  different PC, see "Ham Radio Deluxe" above (loopback-only limitation +
-  firewall).
+  error logged if nothing is listening on the other end. If the packet
+  demonstrably reaches the HRD PC (Wireshark) but HRD still won't show it,
+  make sure you're on 1.4.2+: earlier versions omitted the
+  `<?xml version="1.0"?>` declaration HRD's own documentation shows as
+  part of the wire format, and HRD silently ignores a `<contactinfo>`
+  packet without it even though the socket receives it fine. If HRD is on
+  a different PC, see "Ham Radio Deluxe" above for the network side.
 - **A destination's status dot stays red:** an HTTP output's last POST
   failed; check `WsjtxLogRouter.log` for the `HTTP ERROR '<name>': ...`
   line for the actual response/reason.
