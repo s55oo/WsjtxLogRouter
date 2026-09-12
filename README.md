@@ -50,6 +50,38 @@ WsjtxLogRouter.log  activity log (written by the router engine)
 - **Start / Stop** buttons control the listeners; the router can also
   auto-start on launch (and start automatically with Windows — see below).
 
+## Logger setup
+
+The router itself needs no configuration beyond an `n1mm` input on port
+12060 — it is the *logger* that must be told to broadcast there. Both N1MM+
+and DXLog speak the same XML format on UDP 12060, so the router can listen to
+either (or both, on different ports).
+
+### N1MM Logger+
+
+**Config → Config Ports… → Broadcast Data**, enable:
+
+- **Contacts** – sends a `contactinfo` packet when a QSO is logged (the QSO
+  the router forwards).
+- **External Callsign Lookup** – optional `lookupinfo` packets.
+
+Destination **`127.0.0.1:12060`** (when the router runs on the same PC).
+
+### DXLog.net
+
+Under **Options → Broadcast** tick:
+
+- **Use N1MM QSO format** – the XML layout the router parses (this is what
+  makes DXLog work — no router changes needed).
+- **QSOs** – sends a `contactinfo` packet when a QSO is logged.
+- **Callsign on space or tab** – optional pre-log `lookupinfo` packets.
+
+The broadcast target defaults to `127.0.0.1:12060` (`Network_QSOsBroadcastPort`
+in DXLog's config) — leave it as-is when the router runs on the same PC.
+Verified against DXLog.net v2.6.34.
+
+![DXLog.net – Options → Broadcast](docs/dxlog-broadcast-setup.png)
+
 ## Configuration
 
 ### Via the GUI
