@@ -777,6 +777,7 @@ class App:
 
     # ---- views ----
     def _build_min(self):
+        tk, ttk = self.tk, self.ttk
         f = self.min_frame
         card = ttk.Frame(f)
         card.pack(fill="x", pady=(0, 8))
@@ -799,6 +800,7 @@ class App:
         self.min_tree.pack(fill="both", expand=True, pady=(2, 0))
 
     def _build_details(self):
+        tk, ttk = self.tk, self.ttk
         panes = ttk.PanedWindow(self.details_frame, orient="horizontal")
         panes.pack(fill="both", expand=True, padx=8, pady=(4, 0))
 
