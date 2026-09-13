@@ -298,6 +298,18 @@ python WsjtxLogRouter.py
   breaks for any other reason, instead of dying quietly. Look for
   `WARNING: ... socket on port ... broke (...); reopening` in
   `WsjtxLogRouter.log` if this ever fires.
+- **The app opens Stopped instead of auto-starting like it always used
+  to:** this was a regression in 1.4.5, fixed in 1.4.6. The 1.4.4 fix above
+  tried to disable `SIO_UDP_CONNRESET` via `socket.ioctl()`, but Python's
+  `ioctl()` only accepts a small hardcoded set of control codes and raises
+  `ValueError` (not `OSError`) for anything else — so on 1.4.4/1.4.5 it
+  threw partway through startup, and since the auto-start-on-launch call
+  runs from a Tkinter callback in a console-less build, that exception had
+  nowhere to print and just silently aborted the start. 1.4.6 issues the
+  same Windows call correctly (a raw `WSAIoctl()` via `ctypes` instead of
+  `socket.ioctl()`), and `on_start()` now also logs and recovers from any
+  future startup exception instead of leaving the app looking idle with no
+  explanation.
 - **All GUI errors** (e.g. a bad config) are captured to
   `WsjtxLogRouter.log` — the app runs headless under `pythonw.exe` and has
   no console to print to.

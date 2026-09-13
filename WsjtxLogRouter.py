@@ -37,7 +37,7 @@ from datetime import datetime, date, timedelta
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 
-__version__ = "1.4.5"
+__version__ = "1.4.6"
 
 if getattr(sys, "frozen", False):
     _BASE_DIR = os.path.dirname(os.path.abspath(sys.executable))
@@ -57,17 +57,29 @@ RECV_BUFSIZE = 65535
 # raise WSAECONNRESET (WinError 10054) on that same socket's *next*
 # recvfrom() - even though nothing is actually wrong with the socket. Left
 # enabled, that silently kills an input's receive thread with no traffic
-# ever involved on the input side; SIO_UDP_CONNRESET turns it off. Not
-# exposed as a socket.* constant, hence the literal value.
+# ever involved on the input side; SIO_UDP_CONNRESET turns it off.
+#
+# Python's socket.ioctl() only accepts the handful of control codes CPython
+# hardcodes (SIO_RCVALL, SIO_KEEPALIVE_VALS, SIO_LOOPBACK_FAST_PATH) and
+# raises ValueError for any other command - SIO_UDP_CONNRESET is not one of
+# them, so it has to be issued as a raw WSAIoctl() via ctypes instead.
 _SIO_UDP_CONNRESET = 0x9800000C
 
 
 def _disable_udp_connreset(sock):
-    if sys.platform == "win32":
-        try:
-            sock.ioctl(_SIO_UDP_CONNRESET, False)
-        except OSError:
-            pass
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        in_buf = ctypes.c_ubyte(0)   # FALSE -> turn the behavior off
+        out_len = ctypes.c_ulong(0)
+        ctypes.windll.ws2_32.WSAIoctl(
+            sock.fileno(), _SIO_UDP_CONNRESET,
+            ctypes.byref(in_buf), ctypes.sizeof(in_buf),
+            None, 0, ctypes.byref(out_len), None, None)
+    except Exception:
+        # Best-effort hardening only - never let this block socket setup.
+        pass
 
 SCHEMA2_NAMES = {
     0: "Heartbeat", 1: "Status", 2: "Decode", 3: "Clear", 4: "Reply",
@@ -1430,7 +1442,21 @@ class App:
             return
         cfg = self.cfg()
         self.router.configure(cfg)
-        self.router.start()
+        try:
+            self.router.start()
+        except Exception as e:
+            # This runs both from the Start button and, at launch, from a
+            # root.after() callback tkinter would otherwise just swallow (it
+            # prints to stderr, which goes nowhere in a windowed/pythonw
+            # build) - leaving the app looking idle with no clue why it
+            # never started. Make sure that's never silent again.
+            self.router.running = False
+            try:
+                with open(LOG_FILE, "a", encoding="utf-8", errors="replace") as f:
+                    f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] "
+                            f"ERROR: router failed to start: {e}\n{traceback.format_exc()}\n")
+            except OSError:
+                pass
         self.update_buttons()
 
     def on_stop(self):
