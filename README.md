@@ -282,6 +282,22 @@ python WsjtxLogRouter.py
   exactly as it was at launch; otherwise it skips the save (logging why)
   and leaves your edit alone. Only edit the JSON file while the app is
   fully closed, or make the change through the GUI instead.
+- **An input silently stops receiving after running unattended for a long
+  time (e.g. overnight), with no error shown, and needs an app restart to
+  recover:** fixed in 1.4.4. On Windows, a UDP socket that forwards a
+  datagram to a destination which isn't actually listening (an output like
+  QLog not running) can get back an ICMP "port unreachable", and the *next*
+  `recvfrom()` on that same socket then raises `WSAECONNRESET` — even
+  though nothing is wrong with the input itself. WSJT-X's frequent
+  Heartbeat/Status datagrams (sent constantly, even with zero QSOs) are
+  enough to trigger this over an idle night. Before 1.4.4 that exception
+  silently killed the input's listener thread with no log line, so the app
+  looked alive but had gone deaf. 1.4.4 disables that Windows behavior on
+  every input/HRD socket, and — as a second line of defense — has the
+  listener thread log a `WARNING` and reopen its socket in place if it ever
+  breaks for any other reason, instead of dying quietly. Look for
+  `WARNING: ... socket on port ... broke (...); reopening` in
+  `WsjtxLogRouter.log` if this ever fires.
 - **All GUI errors** (e.g. a bad config) are captured to
   `WsjtxLogRouter.log` — the app runs headless under `pythonw.exe` and has
   no console to print to.

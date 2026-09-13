@@ -37,7 +37,7 @@ from datetime import datetime, date, timedelta
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 
-__version__ = "1.4.3"
+__version__ = "1.4.4"
 
 if getattr(sys, "frozen", False):
     _BASE_DIR = os.path.dirname(os.path.abspath(sys.executable))
@@ -51,6 +51,23 @@ MAGIC = 0xADBCCBDA
 HTTP_TIMEOUT = 15
 UDP_TIMEOUT = 60.0
 RECV_BUFSIZE = 65535
+
+# Windows-only quirk: a UDP socket that sends to a destination which replies
+# with ICMP "port unreachable" (e.g. an output like QLog isn't running) will
+# raise WSAECONNRESET (WinError 10054) on that same socket's *next*
+# recvfrom() - even though nothing is actually wrong with the socket. Left
+# enabled, that silently kills an input's receive thread with no traffic
+# ever involved on the input side; SIO_UDP_CONNRESET turns it off. Not
+# exposed as a socket.* constant, hence the literal value.
+_SIO_UDP_CONNRESET = 0x9800000C
+
+
+def _disable_udp_connreset(sock):
+    if sys.platform == "win32":
+        try:
+            sock.ioctl(_SIO_UDP_CONNRESET, False)
+        except OSError:
+            pass
 
 SCHEMA2_NAMES = {
     0: "Heartbeat", 1: "Status", 2: "Decode", 3: "Clear", 4: "Reply",
@@ -583,6 +600,46 @@ class Router:
             pass
 
     # ---- lifecycle ----
+    def _open_input_socket(self, kind, port):
+        """Create, harden and bind one input's UDP socket. Shared by start()
+        and _reopen_input_socket() so a self-healed socket is set up
+        identically to a freshly started one."""
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        if hasattr(socket, "SO_REUSEPORT"):
+            try:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+            except OSError:
+                pass
+        _disable_udp_connreset(sock)
+        listen_addr = "0.0.0.0" if kind == "n1mm" else "127.0.0.1"
+        sock.bind((listen_addr, port))
+        sock.settimeout(0.5)
+        return sock, listen_addr
+
+    def _reopen_input_socket(self, port):
+        """Recover from a broken input socket (see _SIO_UDP_CONNRESET above,
+        or any other transient OSError _rx_loop hits) without requiring the
+        user to restart the whole app. Returns True on success."""
+        kind = self._kind.get(port)
+        if kind is None:
+            return False
+        old = self._sockets.pop(port, None)
+        if old is not None:
+            try:
+                old.close()
+            except OSError:
+                pass
+        try:
+            sock, listen_addr = self._open_input_socket(kind, port)
+        except OSError as e:
+            self._log(f"ERROR: could not reopen {kind.upper()} port {port}: {e}")
+            return False
+        self._sockets[port] = sock
+        self._log(f"Input: {kind.upper()} reopened UDP {listen_addr}:{port} after a socket error")
+        return True
+
     def start(self):
         if self.running:
             return
@@ -593,17 +650,7 @@ class Router:
             port, kind = inp["port"], inp["type"]
             self._kind[port] = kind
             try:
-                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-                if hasattr(socket, "SO_REUSEPORT"):
-                    try:
-                        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-                    except OSError:
-                        pass
-                listen_addr = "0.0.0.0" if kind == "n1mm" else "127.0.0.1"
-                sock.bind((listen_addr, port))
-                sock.settimeout(0.5)
+                sock, listen_addr = self._open_input_socket(kind, port)
                 self._sockets[port] = sock
                 th = threading.Thread(target=self._rx_loop, args=(port, sock), daemon=True)
                 self._threads[port] = th
@@ -613,15 +660,12 @@ class Router:
                 self._log(f"ERROR: cannot bind port {port}: {e}")
                 self.running = False
                 return
-            except OSError as e:
-                self._log(f"ERROR: cannot bind port {port}: {e}")
-                self.running = False
-                return
         for host, port in self.udp_outputs:
             self._log(f"Output: UDP forward to {host}:{port}")
         if self.hrd_outputs:
             try:
                 self._hrd_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                _disable_udp_connreset(self._hrd_socket)
             except OSError as e:
                 self._log(f"ERROR: cannot create HRD output socket: {e}")
                 self._hrd_socket = None
@@ -660,8 +704,16 @@ class Router:
                 data, src = sock.recvfrom(RECV_BUFSIZE)
             except socket.timeout:
                 continue
-            except OSError:
-                break
+            except OSError as e:
+                if not self.running:
+                    break  # stop() closed the socket from another thread - expected
+                self._log(f"WARNING: {self._kind.get(port, '?').upper()} socket on "
+                          f"port {port} broke ({e}); reopening")
+                if self._reopen_input_socket(port):
+                    sock = self._sockets[port]
+                    continue
+                self._log(f"ERROR: giving up on port {port} - restart the app to recover this input")
+                return
             self._handle(port, data, src)
 
     def _handle(self, port, data, src):
