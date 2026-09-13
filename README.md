@@ -202,7 +202,7 @@ Example:
     {
       "type": "wavelog",
       "name": "Wavelog",
-      "url": "http://10.147.17.209:8086/index.php/api/qso",
+      "url": "http://your-wavelog-host:8086/index.php/api/qso",
       "key": "wl...",
       "station": "1"
     },
