@@ -145,13 +145,15 @@ now appear in HRD automatically alongside Wavelog and CQ Radio.
 
 ### Via the GUI
 
-The window opens in a **minimal view**: the current Running/Stopped state,
-the last QSO logged (callsign + time), and a Destinations list showing
-every configured output with a status dot and its last call. Click
-**Details ▸** to switch to the full view with editable Inputs/Outputs
-tables and the activity log; click **Minimal ◂** to switch back. Both
-views share the same underlying data, so edits made in Details show up in
-the minimal Destinations list immediately.
+The window opens in a **minimal view**: a compact two-line bar with the
+Running/Stopped state, Start/Stop, the last QSO logged (callsign + time),
+and one small status dot + name per configured output — no tables, no
+column headers, the window sized to just fit it. Click **Details ▸** to
+switch to the full view with editable Inputs/Outputs tables and the
+activity log (and a normal 760x560 window); click **Minimal ◂** to switch
+back. Both views share the same underlying data, so edits made in Details
+show up in the minimal bar immediately, and the minimal window resizes
+itself if the number of outputs changes.
 
 - **Status dot** per destination: green ● once an HTTP output's last POST
   actually succeeded, red ● once it failed (checked against the real HTTP

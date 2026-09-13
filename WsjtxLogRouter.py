@@ -37,7 +37,7 @@ from datetime import datetime, date, timedelta
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 
-__version__ = "1.4.6"
+__version__ = "1.5.0"
 
 if getattr(sys, "frozen", False):
     _BASE_DIR = os.path.dirname(os.path.abspath(sys.executable))
@@ -911,7 +911,6 @@ class App:
     def __init__(self, root):
         self.root = root
         self.root.title(f"WSJT-X Multi-Logger Router v{__version__}")
-        self.root.geometry("760x560")
         self.log_q = queue.Queue()
         self.qso_q = queue.Queue()
         self.router = Router(self.log_q.put, self.qso_q.put)
@@ -925,22 +924,16 @@ class App:
         self.ttk = ttk
         self.messagebox = messagebox
 
-        hdr = ttk.Frame(root, padding=(8, 8, 8, 0))
-        hdr.pack(fill="x")
         self.status_var = tk.StringVar(value="Idle")
-        self.status_lbl = tk.Label(
-            hdr, textvariable=self.status_var, anchor="w",
-            font=("Segoe UI", 11, "bold"))
-        self.status_lbl.pack(side="left")
-        self.toggle_btn = ttk.Button(hdr, text="Details \u25b8", command=self.toggle_view)
-        self.toggle_btn.pack(side="right")
-        ttk.Button(hdr, text="Save config", command=self.on_save).pack(side="right", padx=(0, 4))
-        self.stop_btn = tk.Button(hdr, text="Stop", command=self.on_stop,
-                                  relief="raised", bd=1)
-        self.stop_btn.pack(side="right", padx=(0, 4))
-        self.start_btn = tk.Button(hdr, text="Start", command=self.on_start,
-                                   relief="raised", bd=1)
-        self.start_btn.pack(side="right", padx=(0, 4))
+        self.min_last_var = tk.StringVar(value="Last: \u2014")
+        # Start/Stop/status-dot/Details-toggle each exist twice (once in the
+        # compact minimal bar, once in the detailed header) since only one
+        # of those two frames is packed at a time - these lists let
+        # update_buttons()/toggle_view() keep both copies in sync.
+        self.start_btns = []
+        self.stop_btns = []
+        self.toggle_btns = []
+        self.status_dot_lbls = []
 
         self.min_frame = ttk.Frame(root, padding=8)
         self._build_min()
@@ -950,39 +943,70 @@ class App:
 
         self.load_config()
         self.render()
+        # The minimal view has no fixed layout (its width depends on how
+        # many outputs are configured), so let Tk size the window to fit it
+        # snugly instead of guessing pixel dimensions up front.
+        self._fit_min_window()
         root.after(150, self.poll_log)
         root.protocol("WM_DELETE_WINDOW", self.on_close)
         root.after(100, self.on_start)
 
     # ---- views ----
+    def _make_status_dot(self, parent):
+        lbl = self.tk.Label(parent, text="\u25cf", font=("Segoe UI", 11), fg="#888888")
+        self.status_dot_lbls.append(lbl)
+        return lbl
+
+    def _make_start_stop(self, parent):
+        start = self.tk.Button(parent, text="Start", command=self.on_start,
+                                relief="raised", bd=1)
+        stop = self.tk.Button(parent, text="Stop", command=self.on_stop,
+                               relief="raised", bd=1)
+        self.start_btns.append(start)
+        self.stop_btns.append(stop)
+        return start, stop
+
+    def _make_toggle(self, parent):
+        btn = self.ttk.Button(parent, command=self.toggle_view)
+        self.toggle_btns.append(btn)
+        return btn
+
     def _build_min(self):
         tk, ttk = self.tk, self.ttk
         f = self.min_frame
-        card = ttk.Frame(f)
-        card.pack(fill="x", pady=(0, 8))
-        ttk.Label(card, text="Last QSO   ").pack(side="left")
-        self.min_qso_var = tk.StringVar(value="\u2014")
-        ttk.Label(card, textvariable=self.min_qso_var,
-                  font=("Segoe UI", 13, "bold")).pack(side="left", padx=8)
 
-        self.min_inputs_var = tk.StringVar(value="")
-        ttk.Label(f, textvariable=self.min_inputs_var,
-                  foreground="#666666").pack(anchor="w", pady=(0, 6))
+        row1 = ttk.Frame(f)
+        row1.pack(fill="x")
+        self._make_status_dot(row1).pack(side="left")
+        tk.Label(row1, textvariable=self.status_var,
+                 font=("Segoe UI", 10, "bold")).pack(side="left", padx=(4, 10))
+        start, stop = self._make_start_stop(row1)
+        start.pack(side="left")
+        stop.pack(side="left", padx=(4, 10))
+        tk.Label(row1, textvariable=self.min_last_var, foreground="#666666").pack(side="left")
 
-        ttk.Label(f, text="Destinations").pack(anchor="w")
-        self.min_tree = ttk.Treeview(f, columns=("dest", "status", "last"), height=6,
-                                     show="headings")
-        self.min_tree.heading("dest", text="Destination")
-        self.min_tree.heading("status", text="")
-        self.min_tree.heading("last", text="Last call")
-        self.min_tree.column("dest", width=210)
-        self.min_tree.column("status", width=28, anchor="center")
-        self.min_tree.column("last", width=150, anchor="center")
-        self._tag_led_colors(self.min_tree)
-        self.min_tree.pack(fill="both", expand=True, pady=(2, 0))
+        row2 = ttk.Frame(f)
+        row2.pack(fill="x", pady=(6, 0))
+        toggle = self._make_toggle(row2)
+        toggle.configure(text="Details \u25b8")
+        toggle.pack(side="right")
+        self.min_dest_row = ttk.Frame(row2)
+        self.min_dest_row.pack(side="left")
 
     def _build_details(self):
         tk, ttk = self.tk, self.ttk
+        hdr = ttk.Frame(self.details_frame, padding=(8, 8, 8, 0))
+        hdr.pack(fill="x")
+        tk.Label(hdr, textvariable=self.status_var, anchor="w",
+                 font=("Segoe UI", 11, "bold")).pack(side="left")
+        toggle = self._make_toggle(hdr)
+        toggle.configure(text="Minimal \u25c2")
+        toggle.pack(side="right")
+        ttk.Button(hdr, text="Save config", command=self.on_save).pack(side="right", padx=(0, 4))
+        start, stop = self._make_start_stop(hdr)
+        stop.pack(side="right", padx=(0, 4))
+        start.pack(side="right", padx=(0, 4))
+
         panes = ttk.PanedWindow(self.details_frame, orient="horizontal")
         panes.pack(fill="both", expand=True, padx=8, pady=(4, 0))
 
@@ -1033,14 +1057,17 @@ class App:
         if self._view == "min":
             self.min_frame.pack_forget()
             self.details_frame.pack(fill="both", expand=True)
-            self.details_frame.update_idletasks()
             self._view = "details"
-            self.toggle_btn.configure(text="Minimal \u25c2")
+            for b in self.toggle_btns:
+                b.configure(text="Minimal \u25c2")
+            self.root.geometry("760x560")
         else:
             self.details_frame.pack_forget()
             self.min_frame.pack(fill="both", expand=True)
             self._view = "min"
-            self.toggle_btn.configure(text="Details \u25b8")
+            for b in self.toggle_btns:
+                b.configure(text="Details \u25b8")
+            self._fit_min_window()
 
     # ---- helpers ----
     def log(self, msg):
@@ -1065,7 +1092,8 @@ class App:
                 key, call, status = item
                 if call:
                     self._last_calls[key] = call
-                    self.min_qso_var.set(f"{call}   {datetime.now().strftime('%H:%M:%S')}")
+                    self.min_last_var.set(
+                        f"Last: {call}   {datetime.now().strftime('%H:%M:%S')}")
                 if status:
                     self._last_status[key] = status
                 self._apply_last(key, call, status)
@@ -1089,7 +1117,7 @@ class App:
             if status:
                 self.out_tree.set(i, "status", self._status_dot(status))
                 self.out_tree.item(i, tags=(tags[0], status))
-            self._sync_min_tree()
+            self._sync_min_bar()
             return
 
     def cfg(self):
@@ -1126,7 +1154,6 @@ class App:
             else:
                 kind, port = "wsjtx", inp
             self.in_tree.insert("", "end", values=(kind, port))
-        self._sync_min_inputs()
         self.out_tree.delete(*self.out_tree.get_children())
         for out in self._cfg.get("outputs", []):
             key = self.out_key(out)
@@ -1136,7 +1163,7 @@ class App:
                 values=(out.get("type"), self.out_label(out), self._status_dot(status),
                          self._last_calls.get(key, "")),
                 tags=(json.dumps(out), status))
-        self._sync_min_tree()
+        self._sync_min_bar()
 
     @staticmethod
     def out_key(out):
@@ -1178,10 +1205,14 @@ class App:
         tree.tag_configure("error", foreground="#c62828")
         tree.tag_configure("sent", foreground="#888888")
 
-    def _sync_min_tree(self):
-        """Mirror the (authoritative) detailed Outputs tree into the
-        minimal Destinations tree."""
-        self.min_tree.delete(*self.min_tree.get_children())
+    def _sync_min_bar(self):
+        """Rebuild the compact per-destination status dots in the minimal
+        view, from the (authoritative) detailed Outputs tree."""
+        tk = self.tk
+        for w in self.min_dest_row.winfo_children():
+            w.destroy()
+        colors = {"ok": "#2e7d32", "error": "#c62828", "sent": "#888888"}
+        found = False
         for i in self.out_tree.get_children():
             tags = self.out_tree.item(i, "tags")
             if not tags:
@@ -1190,16 +1221,25 @@ class App:
                 out = json.loads(tags[0])
             except (ValueError, IndexError):
                 continue
-            status, last = self.out_tree.item(i, "values")[2:4]
-            self.min_tree.insert("", "end", values=(self.out_name(out), status, last),
-                                 tags=tags)
+            found = True
+            status = tags[1] if len(tags) > 1 else ""
+            cell = tk.Frame(self.min_dest_row)
+            cell.pack(side="left", padx=(0, 10))
+            tk.Label(cell, text="●", fg=colors.get(status, "#cccccc")).pack(side="left")
+            tk.Label(cell, text=self.out_name(out)).pack(side="left", padx=(2, 0))
+        if not found:
+            tk.Label(self.min_dest_row, text="No outputs configured",
+                     fg="#999999").pack(side="left")
+        if self._view == "min":
+            self.root.after_idle(self._fit_min_window)
 
-    def _sync_min_inputs(self):
-        summary = [f"{kind.upper()}:{port}"
-                   for kind, port in (self.in_tree.item(i, "values")
-                                      for i in self.in_tree.get_children())]
-        self.min_inputs_var.set(
-            "Listening on " + ", ".join(summary) if summary else "No inputs configured")
+    def _fit_min_window(self):
+        """Re-fit the window to the minimal view's (now possibly wider or
+        narrower) content, e.g. after an output was added or removed."""
+        if self._view != "min":
+            return
+        self.root.update_idletasks()
+        self.root.geometry("")
 
     # ---- input dialogs ----
     def input_dialog(self, title, current=None):
@@ -1261,7 +1301,6 @@ class App:
         r = self.input_dialog("Add UDP input")
         if r:
             self.in_tree.insert("", "end", values=r)
-            self._sync_min_inputs()
 
     def edit_input(self):
         sel = self.in_tree.selection()
@@ -1271,13 +1310,11 @@ class App:
         r = self.input_dialog("Edit UDP input", current=(kind, int(port)))
         if r:
             self.in_tree.item(sel[0], values=r)
-            self._sync_min_inputs()
 
     def del_input(self):
         sel = self.in_tree.selection()
         if sel:
             self.in_tree.delete(sel[0])
-            self._sync_min_inputs()
 
     # ---- output dialogs ----
     def add_output(self):
@@ -1290,7 +1327,7 @@ class App:
                 values=(out.get("type"), self.out_label(out), self._status_dot(status),
                         self._last_calls.get(key, "")),
                 tags=(json.dumps(out), status))
-            self._sync_min_tree()
+            self._sync_min_bar()
 
     def edit_output(self):
         sel = self.out_tree.selection()
@@ -1306,13 +1343,13 @@ class App:
                 values=(out.get("type"), self.out_label(out), self._status_dot(status),
                         self._last_calls.get(key, "")),
                 tags=(json.dumps(out), status))
-            self._sync_min_tree()
+            self._sync_min_bar()
 
     def del_output(self):
         sel = self.out_tree.selection()
         if sel:
             self.out_tree.delete(sel[0])
-            self._sync_min_tree()
+            self._sync_min_bar()
 
     def output_dialog(self, current=None):
         import tkinter as tk
@@ -1464,18 +1501,24 @@ class App:
         self.update_buttons()
 
     def update_buttons(self):
-        if self.router.running:
-            self.start_btn.configure(bg="#2e7d32", fg="white",
-                                     activebackground="#1b5e20", activeforeground="white")
-            self.stop_btn.configure(bg="SystemButtonFace", fg="SystemButtonText",
-                                    activebackground="#d0d0d0", activeforeground="SystemButtonText")
-            self.status_var.set("Running")
-        else:
-            self.stop_btn.configure(bg="#c62828", fg="white",
-                                    activebackground="#b71c1c", activeforeground="white")
-            self.start_btn.configure(bg="SystemButtonFace", fg="SystemButtonText",
-                                     activebackground="#d0d0d0", activeforeground="SystemButtonText")
-            self.status_var.set("Stopped")
+        running = self.router.running
+        for b in self.start_btns:
+            if running:
+                b.configure(bg="#2e7d32", fg="white",
+                            activebackground="#1b5e20", activeforeground="white")
+            else:
+                b.configure(bg="SystemButtonFace", fg="SystemButtonText",
+                            activebackground="#d0d0d0", activeforeground="SystemButtonText")
+        for b in self.stop_btns:
+            if running:
+                b.configure(bg="SystemButtonFace", fg="SystemButtonText",
+                            activebackground="#d0d0d0", activeforeground="SystemButtonText")
+            else:
+                b.configure(bg="#c62828", fg="white",
+                            activebackground="#b71c1c", activeforeground="white")
+        for d in self.status_dot_lbls:
+            d.configure(fg="#2e7d32" if running else "#c62828")
+        self.status_var.set("Running" if running else "Stopped")
 
     def on_close(self):
         # Only auto-save GUI edits if the config file is still exactly as it
