@@ -155,6 +155,10 @@ back. Both views share the same underlying data, so edits made in Details
 show up in the minimal bar immediately, and the minimal window resizes
 itself if the number of outputs changes.
 
+- **All times shown anywhere in the app** (the last-QSO time, the activity
+  log, `WsjtxLogRouter.log`) **are UTC/GMT**, regardless of the PC's own
+  timezone — hams log in UTC, so the router never shows local time.
+
 - **Status dot** per destination: green ● once an HTTP output's last POST
   actually succeeded, red ● once it failed (checked against the real HTTP
   response, not just "a send was attempted"), gray ○ for UDP/ADIF outputs

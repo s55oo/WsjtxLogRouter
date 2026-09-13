@@ -33,11 +33,11 @@ import os
 import traceback
 import xml.etree.ElementTree as ET
 from xml.sax.saxutils import escape as xml_escape
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 
-__version__ = "1.5.0"
+__version__ = "1.5.1"
 
 if getattr(sys, "frozen", False):
     _BASE_DIR = os.path.dirname(os.path.abspath(sys.executable))
@@ -47,6 +47,20 @@ CONFIG_FILE = os.path.join(_BASE_DIR, "WsjtxLogRouter.json")
 
 LOG_FILE = os.path.join(_BASE_DIR, "WsjtxLogRouter.log")
 MAGIC = 0xADBCCBDA
+
+
+def _utc_now_str():
+    """Full UTC timestamp for the log file. Hams log everything in UTC/GMT,
+    never local time, so every timestamp this app writes or shows follows
+    suit rather than mixing in whatever timezone the PC happens to be set
+    to."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S") + " UTC"
+
+
+def _utc_now_short():
+    """Time-only UTC timestamp for the GUI (activity log panel, last-QSO
+    time) - same reasoning as _utc_now_str() above."""
+    return datetime.now(timezone.utc).strftime("%H:%M:%S") + " UTC"
 
 HTTP_TIMEOUT = 15
 UDP_TIMEOUT = 60.0
@@ -563,7 +577,7 @@ class Router:
         self.logfn(msg)
         try:
             with open(LOG_FILE, "a", encoding="utf-8", errors="replace") as f:
-                f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
+                f.write(f"[{_utc_now_str()}] {msg}\n")
         except OSError:
             pass
 
@@ -1080,7 +1094,7 @@ class App:
             except queue.Empty:
                 break
             self.log_text.configure(state="normal")
-            self.log_text.insert("end", f"[{datetime.now().strftime('%H:%M:%S')}] {msg}\n")
+            self.log_text.insert("end", f"[{_utc_now_short()}] {msg}\n")
             self.log_text.see("end")
             self.log_text.configure(state="disabled")
         while True:
@@ -1092,8 +1106,7 @@ class App:
                 key, call, status = item
                 if call:
                     self._last_calls[key] = call
-                    self.min_last_var.set(
-                        f"Last: {call}   {datetime.now().strftime('%H:%M:%S')}")
+                    self.min_last_var.set(f"Last: {call}   {_utc_now_short()}")
                 if status:
                     self._last_status[key] = status
                 self._apply_last(key, call, status)
@@ -1490,7 +1503,7 @@ class App:
             self.router.running = False
             try:
                 with open(LOG_FILE, "a", encoding="utf-8", errors="replace") as f:
-                    f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] "
+                    f.write(f"[{_utc_now_str()}] "
                             f"ERROR: router failed to start: {e}\n{traceback.format_exc()}\n")
             except OSError:
                 pass
@@ -1541,7 +1554,7 @@ class App:
         else:
             try:
                 with open(LOG_FILE, "a", encoding="utf-8", errors="replace") as f:
-                    f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] "
+                    f.write(f"[{_utc_now_str()}] "
                             f"Config file changed on disk since launch - not "
                             f"auto-saving on close (use Save config to overwrite "
                             f"it deliberately, or restart to pick up its current "
@@ -1560,7 +1573,7 @@ def main():
         msg = "".join(traceback.format_exception(exc_type, exc, tb))
         try:
             with open(LOG_FILE, "a", encoding="utf-8", errors="replace") as f:
-                f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] "
+                f.write(f"[{_utc_now_str()}] "
                         f"GUI ERROR\n{msg}\n")
         except OSError:
             pass
