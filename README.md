@@ -145,6 +145,8 @@ now appear in HRD automatically alongside Wavelog and CQ Radio.
 
 ### Via the GUI
 
+![Minimal view](docs/minimal-view.png)
+
 The window opens in a **minimal view**: a compact two-line bar with the
 Running/Stopped state, Start/Stop, the last QSO logged (callsign + time),
 and one small status dot + name per configured output — no tables, no
