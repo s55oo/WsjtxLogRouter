@@ -37,7 +37,7 @@ from datetime import datetime, date, timedelta, timezone
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 
-__version__ = "1.5.1"
+__version__ = "1.5.2"
 
 if getattr(sys, "frozen", False):
     _BASE_DIR = os.path.dirname(os.path.abspath(sys.executable))
@@ -801,9 +801,17 @@ class Router:
             freq_key = round(float(freq_raw), 6) if freq_raw else ""
         except ValueError:
             freq_key = freq_raw
+        # Same reasoning as the frequency normalization above, for mode:
+        # WSJT-X's own LoggedADIF text writes FT4 (and FST4, Q65, ...) as
+        # MODE=MFSK / SUBMODE=FT4 (older ADIF spec compatibility), while the
+        # QSOLogged binary message's mode field is just "FT4" directly, with
+        # no submode concept. Left as MODE alone, that mismatch ("MFSK" vs
+        # "FT4") defeated dedup for exactly these modes - prefer submode
+        # when present so both encodings key the same way.
+        mode_key = (qso.get("submode") or qso.get("mode") or "").strip().upper()
         key = (qso.get("callsign", "").strip().upper(),
                qso.get("qso_date", ""),
-               qso.get("mode", "").strip().upper(),
+               mode_key,
                freq_key)
         now = time.time()
         if key[0] and key in self._recent_qsos and self._recent_qsos[key] > now:

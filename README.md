@@ -254,7 +254,13 @@ python WsjtxLogRouter.py
   QSOLogged-derived ADIF strips trailing zeros (`14.07508`) for the same
   QSO; comparing those as plain strings used to let the pair slip past
   dedup and double-post to every HTTP output whenever a frequency happened
-  to end in a zero.
+  to end in a zero. The same reasoning applies to mode: fixed in 1.5.2,
+  the key now prefers `SUBMODE` over `MODE` when present, because WSJT-X's
+  own ADIF text writes FT4/FST4/Q65/etc. as `MODE=MFSK SUBMODE=FT4` while
+  the `QSOLogged` binary message just reports `FT4` directly - comparing
+  `MODE` alone let that pair slip past dedup too, double-posting every FT4
+  (and FST4/Q65/...) QSO specifically, while FT8 (no submode wrapping)
+  deduplicated correctly.
 - **ADIF output quality:** QSOs are enriched with `BAND` (derived from
   frequency) and `TX_PWR` (from WSJT-X `tx_pwr`) before dispatch.
 - **Logging:** every event/error is written to `WsjtxLogRouter.log`
@@ -269,6 +275,12 @@ python WsjtxLogRouter.py
   server set to `127.0.0.1:2237`, and that the router shows green Start.
 - **Every QSO posts twice to Wavelog/CQ Radio/HTTP:** fixed in 1.2.0 (see
   Duplicate suppression above) — update if you're on an older build.
+- **FT4 (or FST4/Q65) QSOs post twice but FT8 doesn't:** fixed in 1.5.2 (see
+  Duplicate suppression above) — the dedup key used to compare `MODE`
+  alone, and WSJT-X's own ADIF wraps these modes as `MODE=MFSK
+  SUBMODE=FT4`, which didn't match the plain `FT4` the binary `QSOLogged`
+  message reports, letting the pair slip past dedup — update if you're on
+  an older build.
 - **HRD never receives anything:** check `WsjtxLogRouter.log` for
   `Output: HRD '<name>' -> host:port` at startup (confirms the output is
   configured) — the `hrd` output is fire-and-forget UDP, so there is no
